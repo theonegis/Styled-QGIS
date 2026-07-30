@@ -83,9 +83,8 @@ if(QGISPLUS_BUILD_TESTS)
     target_link_libraries(QGISPlusStyleSmokeTest PRIVATE Qt6::Widgets)
     add_dependencies(QGISPlusStyleSmokeTest QGISPlusStyle)
 
-    add_test(NAME style-plugin-discovery COMMAND QGISPlusStyleSmokeTest)
-    set_tests_properties(style-plugin-discovery PROPERTIES
-        ENVIRONMENT "QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins;QT_QPA_PLATFORM=offscreen"
+    add_test(
+        NAME style-plugin-discovery
+        COMMAND QGISPlusStyleSmokeTest $<TARGET_FILE:QGISPlusStyle>
     )
 endif()
-
