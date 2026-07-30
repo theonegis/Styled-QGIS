@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from apply_qgis_patch import patch_bundle, patch_cmake, patch_main
 from resolve_versions import QGIS_RELEASE_RE, _select_release
+
+
+class WorkflowTests(unittest.TestCase):
+    def test_remote_actions_use_full_commit_sha(self) -> None:
+        workflows = Path(__file__).resolve().parents[1] / ".github/workflows"
+        full_sha = re.compile(r"^[^/\s@]+/[^/\s@]+@[0-9a-f]{40}$")
+
+        # 固定完整提交既能避免上游标签漂移，也能在推送前发现 SHA 截断。
+        for workflow in workflows.glob("*.yml"):
+            for line_number, line in enumerate(
+                workflow.read_text(encoding="utf-8").splitlines(), start=1
+            ):
+                match = re.search(r"\buses:\s*(\S+)", line)
+                if match is None or match.group(1).startswith("./"):
+                    continue
+                action = match.group(1)
+                with self.subTest(workflow=workflow.name, line=line_number):
+                    self.assertRegex(action, full_sha)
 
 
 class VersionResolverTests(unittest.TestCase):

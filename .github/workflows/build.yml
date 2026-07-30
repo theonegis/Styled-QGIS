@@ -151,7 +151,7 @@ jobs:
           $target = "dist/QGISPlus-${{ needs.versions.outputs.qgis_version }}-windows-x64-setup.exe"
           Copy-Item $installer.FullName $target
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0 # v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: QGISPlus-${{ needs.versions.outputs.qgis_version }}-windows-x64
           path: dist/*-setup.exe
@@ -285,7 +285,7 @@ jobs:
             -ov -format UDZO \
             "dist/QGISPlus-${{ needs.versions.outputs.qgis_version }}-macos-${{ matrix.artifact_arch }}.dmg"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0 # v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: QGISPlus-${{ needs.versions.outputs.qgis_version }}-macos-${{ matrix.artifact_arch }}
           path: dist/*.dmg
