@@ -110,7 +110,8 @@ jobs:
             -D WITH_SFCGAL=ON \
             -D ENABLE_TESTS=OFF \
             -D WITH_QTWEBENGINE=OFF \
-            -D ENABLE_UNITY_BUILDS=OFF \
+            -D ENABLE_UNITY_BUILDS=ON \
+            -D CMAKE_UNITY_BUILD_BATCH_SIZE=4 \
             -D FLEX_EXECUTABLE="${GITHUB_WORKSPACE}/win_flex.exe" \
             -D BISON_EXECUTABLE="${GITHUB_WORKSPACE}/win_bison.exe" \
             -D VCPKG_INSTALL_OPTIONS="--x-buildtrees-root=C:/src" \
@@ -247,6 +248,7 @@ jobs:
             -D CMAKE_OSX_DEPLOYMENT_TARGET="${{ matrix.deployment_target }}" \
             -D CMAKE_OSX_ARCHITECTURES="${{ matrix.arch }}" \
             -D ENABLE_UNITY_BUILDS=ON \
+            -D CMAKE_UNITY_BUILD_BATCH_SIZE=4 \
             -D NUGET_USERNAME="${GITHUB_ACTOR}" \
             -D NUGET_SOURCE="https://nuget.pkg.github.com/qgis/index.json" \
             -D NUGET_TOKEN="${{ secrets.GITHUB_TOKEN }}"
