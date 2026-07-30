@@ -10,7 +10,7 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-from apply_qgis_patch import patch_bundle, patch_cmake, patch_main
+from apply_qgis_patch import patch_cmake, patch_main
 from resolve_versions import Release, resolve
 
 
@@ -83,7 +83,6 @@ def main() -> int:
         )
         patch_main(qgis_source)
         patch_cmake(qgis_source)
-        patch_bundle(qgis_source)
 
         versions = {name: asdict(value) for name, value in releases.items()}
         (output / "versions.json").write_text(

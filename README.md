@@ -14,7 +14,7 @@ GitHub Actions 默认构建：
 
 - macOS Intel（x86_64）DMG；
 - macOS Apple Silicon（arm64）DMG；
-- Windows x64 NSIS 安装包（`.exe`）。
+- Windows x64 Qt Installer Framework 离线安装包（`.exe`）。
 
 Linux 不构建 Qlementine 版本。Linux 用户可直接使用发行版提供的 QGIS，
 并通过 Kvantum 或桌面 Qt Style 统一外观。
@@ -89,9 +89,10 @@ QGIS 源码补丁只负责：
 - 在 QGIS 自己完成 UI Theme/Adwaita 回退判断后选择 Qlementine；
 - 仅当用户没有保存其他 Style 时应用默认值；
 - 插件不存在时安全回退到 QGIS 原有 Style；
-- 在 CPack 阶段把插件放入 macOS `Contents/PlugIns/styles`，以及 Windows
+- 在安装阶段把插件放入 macOS `Contents/PlugIns/styles`，以及 Windows
   的 Qt plugins 目录；
-- Windows 使用 CPack + NSIS 生成可交互安装、卸载的 `.exe`，不发布 ZIP。
+- Windows 使用 Qt Installer Framework 生成可交互安装、卸载的离线
+  `.exe`，不发布 ZIP。
 
 用户随后在 QGIS 设置中选择其他 Style 时，该选择优先于 QGIS+ 默认值。
 
@@ -140,11 +141,19 @@ QLEMENTINE_TAG=v1.4.2 ./scripts/build_style.sh
 3. 使用 QGIS 官方 Qt6/vcpkg 依赖配置；
 4. 用同一 Qt 编译 Qlementine Style 插件并运行发现测试；
 5. 完整编译 QGIS；
-6. 在 CPack 阶段注入 Style 插件；
-7. 生成 Windows NSIS EXE 或分架构 macOS DMG。
+6. 安装到独立的运行时暂存目录并验证关键程序与 Style 插件；
+7. Windows 编译 Job 上传暂存运行时，由独立 Job 生成 QtIFW 离线 EXE；
+8. 对 Windows 安装包执行静默安装、命令行启动和卸载测试；
+9. 对 macOS App 执行无界面启动检查后生成分架构 DMG。
 
 完整 QGIS 编译通常需要数小时。Windows 上游官方 Qt6 CI 自身也可能接近
-GitHub-hosted runner 的时限，因此工作流超时设置为 350 分钟。
+GitHub-hosted runner 的时限，因此编译工作流超时设置为 350 分钟。编译与
+Windows 打包被有意拆成两个 Job：如果安装器阶段失败，可以仅重跑失败的
+打包 Job，复用同一次运行已经上传的暂存运行时，无需再次编译 QGIS。
+
+macOS 显式关闭上游用于开发阶段生成 QScintilla API/PAP 文件的
+`WITH_QSCIAPI`。这不会关闭 Python、PyQGIS 或 Processing，可避免 vcpkg
+Python 在生成 PAP 时同时加载多个 Qt6Core 兼容名导致的构建期崩溃。
 
 ## 目录
 
@@ -155,7 +164,9 @@ GitHub-hosted runner 的时限，因此工作流超时设置为 350 分钟。
 ├── scripts/
 │   ├── resolve_versions.py         # 稳定 Release 解析
 │   ├── prepare_source.py           # 拉取上游并生成可构建源码
-│   └── apply_qgis_patch.py         # 幂等、锚点校验的 QGIS 补丁
+│   ├── apply_qgis_patch.py         # 幂等、锚点校验的 QGIS 补丁
+│   └── prepare_ifw_package.py      # 生成并校验 Windows QtIFW 元数据
+├── packaging/ifw/                  # Windows 安装器组件脚本
 ├── tests/                          # 版本选择、补丁和插件发现测试
 └── .github/workflows/
     ├── check.yml                   # 快速集成检查

@@ -10,7 +10,6 @@ from pathlib import Path
 
 MAIN_MARKER = "// QGIS+ default style"
 CMAKE_MARKER = "# QGIS+ style plugin"
-BUNDLE_MARKER = "# QGIS+ NSIS generator"
 
 
 def _replace_once(path: Path, old: str, new: str) -> None:
@@ -73,7 +72,7 @@ endif()
   include(VcpkgInstallDeps)
 
   # QGIS+ style plugin
-  # 插件与 QGIS 使用同一套 vcpkg/Qt 构建，在 CPack 安装阶段进入 Qt styles 目录。
+  # 插件与 QGIS 使用同一套 vcpkg/Qt 构建，在 CMake 安装阶段进入 Qt styles 目录。
   set(QGISPLUS_STYLE_PLUGIN "" CACHE FILEPATH
       "Absolute path to the externally built QGIS+ QStyle plugin")
   if(QGISPLUS_STYLE_PLUGIN)
@@ -96,25 +95,6 @@ endif()
     _replace_once(path, anchor, replacement)
 
 
-def patch_bundle(source: Path) -> None:
-    path = source / "cmake/Bundle.cmake"
-    content = path.read_text(encoding="utf-8")
-    if BUNDLE_MARKER in content:
-        return
-
-    anchor = """if(CREATE_NSIS)
-  # There is a bug in NSI that does not handle full unix paths properly. Make
-"""
-    replacement = """if(CREATE_NSIS)
-  # QGIS+ NSIS generator
-  # 上游创建了 CREATE_NSIS 开关但没有把 NSIS 加入 CPACK_GENERATOR。
-  list(APPEND CPACK_GENERATOR "NSIS")
-
-  # There is a bug in NSI that does not handle full unix paths properly. Make
-"""
-    _replace_once(path, anchor, replacement)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("source", type=Path, help="QGIS source directory")
@@ -124,7 +104,6 @@ def main() -> int:
     try:
         patch_main(source)
         patch_cmake(source)
-        patch_bundle(source)
     except (OSError, RuntimeError) as error:
         print(error, file=sys.stderr)
         return 1

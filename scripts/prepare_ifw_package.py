@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""Prepare deterministic Qt Installer Framework metadata for QGIS+."""
+
+from __future__ import annotations
+
+import argparse
+import re
+import shutil
+import sys
+import xml.etree.ElementTree as ET
+from datetime import date
+from pathlib import Path
+
+
+PACKAGE_ID = "org.qgisplus.desktop"
+VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
+
+
+def _write_xml(path: Path, root: ET.Element) -> None:
+    tree = ET.ElementTree(root)
+    ET.indent(tree, space="  ")
+    tree.write(path, encoding="utf-8", xml_declaration=True)
+
+
+def _add_text(parent: ET.Element, name: str, value: str) -> None:
+    ET.SubElement(parent, name).text = value
+
+
+def validate_runtime(runtime: Path) -> None:
+    required_files = (
+        runtime / "bin" / "QGIS+.exe",
+        runtime / "bin" / "qgis_process.exe",
+    )
+    for required_file in required_files:
+        if not required_file.is_file():
+            raise RuntimeError(f"Required QGIS runtime file is missing: {required_file}")
+
+    style_candidates = (
+        runtime / "bin" / "Qt6" / "plugins" / "styles" / "qgisplusstyle.dll",
+        runtime / "bin" / "qtplugins" / "styles" / "qgisplusstyle.dll",
+    )
+    if not any(candidate.is_file() for candidate in style_candidates):
+        raise RuntimeError(
+            "Qlementine style plugin is missing from the staged QGIS runtime"
+        )
+
+
+def prepare_ifw_package(
+    runtime: Path,
+    output: Path,
+    version: str,
+    release_date: str,
+    license_path: Path,
+    install_script: Path,
+) -> None:
+    runtime = runtime.resolve()
+    output = output.resolve()
+    if not VERSION_RE.fullmatch(version):
+        raise RuntimeError(f"Invalid QGIS version for QtIFW: {version}")
+    try:
+        date.fromisoformat(release_date)
+    except ValueError as error:
+        raise RuntimeError(
+            f"Release date must use YYYY-MM-DD: {release_date}"
+        ) from error
+    if not license_path.is_file():
+        raise RuntimeError(f"License file is missing: {license_path}")
+    if not install_script.is_file():
+        raise RuntimeError(f"QtIFW component script is missing: {install_script}")
+
+    validate_runtime(runtime)
+
+    package_root = output / "packages" / PACKAGE_ID
+    data_directory = package_root / "data"
+    if data_directory.resolve() != runtime:
+        raise RuntimeError(
+            "The downloaded runtime must be placed directly in the QtIFW "
+            f"package data directory: {data_directory}"
+        )
+
+    config_directory = output / "config"
+    metadata_directory = package_root / "meta"
+    config_directory.mkdir(parents=True, exist_ok=True)
+    metadata_directory.mkdir(parents=True, exist_ok=True)
+
+    installer = ET.Element("Installer")
+    for name, value in (
+        ("Name", "QGIS+"),
+        ("Version", version),
+        ("Title", "QGIS+ Installer"),
+        ("Publisher", "QGIS+ Community Build"),
+        ("ProductUrl", "https://github.com/theonegis/Styled-QGIS"),
+        ("StartMenuDir", "QGIS+"),
+        ("TargetDir", "@ApplicationsDirX64@/QGIS+"),
+        ("MaintenanceToolName", "QGISPlusMaintenanceTool"),
+        ("AllowNonAsciiCharacters", "true"),
+    ):
+        _add_text(installer, name, value)
+    _write_xml(config_directory / "config.xml", installer)
+
+    package = ET.Element("Package")
+    for name, value in (
+        ("DisplayName", "QGIS+"),
+        ("Description", "QGIS with the Qlementine interface style"),
+        ("Version", version),
+        ("ReleaseDate", release_date),
+        ("Default", "true"),
+        ("Essential", "true"),
+        ("ForcedInstallation", "true"),
+        ("Script", "installscript.qs"),
+    ):
+        _add_text(package, name, value)
+    licenses = ET.SubElement(package, "Licenses")
+    ET.SubElement(
+        licenses,
+        "License",
+        {"name": "GPL-2.0-or-later", "file": "LICENSE.txt"},
+    )
+    _write_xml(metadata_directory / "package.xml", package)
+
+    shutil.copy2(license_path, metadata_directory / "LICENSE.txt")
+    shutil.copy2(install_script, metadata_directory / "installscript.qs")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--runtime", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--version", required=True)
+    parser.add_argument("--release-date", default=date.today().isoformat())
+    parser.add_argument("--license", required=True, type=Path)
+    parser.add_argument("--install-script", required=True, type=Path)
+    args = parser.parse_args()
+
+    try:
+        prepare_ifw_package(
+            args.runtime,
+            args.output,
+            args.version,
+            args.release_date,
+            args.license,
+            args.install_script,
+        )
+    except (OSError, RuntimeError) as error:
+        print(error, file=sys.stderr)
+        return 1
+
+    print(f"Prepared QtIFW package metadata for QGIS+ {args.version}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

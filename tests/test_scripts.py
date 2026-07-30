@@ -5,13 +5,15 @@ from __future__ import annotations
 import re
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from apply_qgis_patch import patch_bundle, patch_cmake, patch_main
+from apply_qgis_patch import patch_cmake, patch_main
+from prepare_ifw_package import PACKAGE_ID, prepare_ifw_package
 from resolve_versions import QGIS_RELEASE_RE, _select_release
 
 
@@ -31,6 +33,19 @@ class WorkflowTests(unittest.TestCase):
                 action = match.group(1)
                 with self.subTest(workflow=workflow.name, line=line_number):
                     self.assertRegex(action, full_sha)
+
+    def test_release_workflow_uses_verified_platform_packages(self) -> None:
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github/workflows/build.yml"
+        ).read_text(encoding="utf-8")
+        self.assertGreaterEqual(workflow.count("-D WITH_QSCIAPI=OFF"), 2)
+        self.assertIn("windows_build:", workflow)
+        self.assertIn("windows_package:", workflow)
+        self.assertIn("QtInstallerFramework/4.7/bin", workflow)
+        self.assertIn("Silently install and verify QGIS+", workflow)
+        self.assertIn("Verify bundled macOS application", workflow)
+        self.assertNotIn("-D CREATE_NSIS=ON", workflow)
 
 
 class VersionResolverTests(unittest.TestCase):
@@ -82,27 +97,75 @@ class PatchTests(unittest.TestCase):
                 "endif()\n",
                 encoding="utf-8",
             )
-            bundle = root / "cmake/Bundle.cmake"
-            bundle.parent.mkdir(parents=True)
-            bundle.write_text(
-                "if(CREATE_NSIS)\n"
-                "  # There is a bug in NSI that does not handle full unix paths properly. Make\n"
-                "endif()\n",
-                encoding="utf-8",
-            )
 
             patch_main(root)
             patch_cmake(root)
-            patch_bundle(root)
             first_main = main.read_text(encoding="utf-8")
             first_cmake = cmake.read_text(encoding="utf-8")
-            first_bundle = bundle.read_text(encoding="utf-8")
             patch_main(root)
             patch_cmake(root)
-            patch_bundle(root)
             self.assertEqual(first_main, main.read_text(encoding="utf-8"))
             self.assertEqual(first_cmake, cmake.read_text(encoding="utf-8"))
-            self.assertEqual(first_bundle, bundle.read_text(encoding="utf-8"))
+
+
+class QtIfwPackageTests(unittest.TestCase):
+    def test_generates_valid_metadata_for_staged_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "ifw"
+            runtime = output / "packages" / PACKAGE_ID / "data"
+            style = (
+                runtime
+                / "bin"
+                / "Qt6"
+                / "plugins"
+                / "styles"
+                / "qgisplusstyle.dll"
+            )
+            style.parent.mkdir(parents=True)
+            for path in (
+                runtime / "bin" / "QGIS+.exe",
+                runtime / "bin" / "qgis_process.exe",
+                style,
+            ):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"test")
+
+            license_path = root / "LICENSE"
+            license_path.write_text("GPL test license", encoding="utf-8")
+            install_script = root / "installscript.qs"
+            install_script.write_text("function Component() {}", encoding="utf-8")
+
+            prepare_ifw_package(
+                runtime,
+                output,
+                "4.2.0",
+                "2026-07-31",
+                license_path,
+                install_script,
+            )
+
+            config = ET.parse(output / "config" / "config.xml").getroot()
+            package = ET.parse(
+                output / "packages" / PACKAGE_ID / "meta" / "package.xml"
+            ).getroot()
+            self.assertEqual(config.findtext("Name"), "QGIS+")
+            self.assertEqual(config.findtext("Version"), "4.2.0")
+            self.assertEqual(
+                config.findtext("TargetDir"), "@ApplicationsDirX64@/QGIS+"
+            )
+            self.assertEqual(package.findtext("Version"), "4.2.0")
+            self.assertEqual(package.findtext("ReleaseDate"), "2026-07-31")
+            self.assertEqual(package.findtext("ForcedInstallation"), "true")
+            self.assertTrue(
+                (
+                    output
+                    / "packages"
+                    / PACKAGE_ID
+                    / "meta"
+                    / "installscript.qs"
+                ).is_file()
+            )
 
 
 if __name__ == "__main__":

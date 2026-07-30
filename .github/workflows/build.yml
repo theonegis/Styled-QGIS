@@ -41,8 +41,8 @@ jobs:
       - name: Show selected versions
         run: cat versions.json
 
-  windows:
-    name: Windows x64
+  windows_build:
+    name: Build Windows x64 runtime
     needs: versions
     runs-on: windows-2022
     timeout-minutes: 350
@@ -51,6 +51,7 @@ jobs:
       QLEMENTINE_SOURCE: ${{ github.workspace }}/upstream/qlementine
       QGIS_BUILD: ${{ github.workspace }}/upstream/QGIS/build
       STYLE_BUILD: ${{ github.workspace }}/style-build
+      QGIS_RUNTIME: D:/qgisplus-runtime
       VCPKG_TRIPLET: x64-windows-release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -86,10 +87,6 @@ jobs:
           tag: v2.5.24
           extract: true
 
-      - name: Install NSIS
-        shell: pwsh
-        run: choco install nsis --yes --no-progress
-
       - name: Configure QGIS and dependencies
         shell: bash
         env:
@@ -99,8 +96,6 @@ jobs:
             -D CMAKE_BUILD_TYPE=Release \
             -D QGIS_APP_NAME="QGIS+" \
             -D WITH_VCPKG=ON \
-            -D CREATE_NSIS=ON \
-            -D CREATE_ZIP=OFF \
             -D VCPKG_TARGET_TRIPLET="${VCPKG_TRIPLET}" \
             -D VCPKG_HOST_TRIPLET="${VCPKG_TRIPLET}" \
             -D WITH_DESKTOP=ON \
@@ -110,6 +105,7 @@ jobs:
             -D WITH_SFCGAL=ON \
             -D ENABLE_TESTS=OFF \
             -D WITH_QTWEBENGINE=OFF \
+            -D WITH_QSCIAPI=OFF \
             -D ENABLE_UNITY_BUILDS=ON \
             -D CMAKE_UNITY_BUILD_BATCH_SIZE=4 \
             -D FLEX_EXECUTABLE="${GITHUB_WORKSPACE}/win_flex.exe" \
@@ -136,23 +132,184 @@ jobs:
           test -n "${STYLE_PLUGIN}"
           cmake -D "QGISPLUS_STYLE_PLUGIN=${STYLE_PLUGIN}" "${QGIS_BUILD}"
 
-      - name: Build and bundle QGIS+
+      - name: Build QGIS+
         shell: bash
-        run: |
-          cmake --build "${QGIS_BUILD}" --config Release
-          cmake --build "${QGIS_BUILD}" --target bundle --config Release
+        run: cmake --build "${QGIS_BUILD}" --config Release
 
-      - name: Rename Windows installer
+      - name: Stage and verify Windows runtime
+        shell: pwsh
+        run: |
+          cmake --install "$env:QGIS_BUILD" `
+            --config Release `
+            --prefix "$env:QGIS_RUNTIME"
+          if ($LASTEXITCODE -ne 0) {
+            throw "QGIS runtime installation failed with exit code $LASTEXITCODE"
+          }
+
+          $requiredFiles = @(
+            "$env:QGIS_RUNTIME/bin/QGIS+.exe"
+            "$env:QGIS_RUNTIME/bin/qgis_process.exe"
+            "$env:QGIS_RUNTIME/bin/Qt6/plugins/styles/qgisplusstyle.dll"
+            "$env:QGIS_RUNTIME/bin/qtplugins/styles/qgisplusstyle.dll"
+          )
+          foreach ($requiredFile in $requiredFiles) {
+            if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
+              throw "Staged QGIS runtime is missing: $requiredFile"
+            }
+          }
+
+          & "$env:QGIS_RUNTIME/bin/qgis_process.exe" --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "The staged qgis_process executable failed its version check"
+          }
+
+          $runtimeSize = (
+            Get-ChildItem -LiteralPath "$env:QGIS_RUNTIME" -File -Recurse |
+              Measure-Object -Property Length -Sum
+          ).Sum
+          Write-Host "Staged runtime size: $runtimeSize bytes"
+
+      - name: Upload staged Windows runtime
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: QGISPlus-runtime-${{ needs.versions.outputs.qgis_version }}-windows-x64
+          path: D:/qgisplus-runtime
+          if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 6
+          retention-days: 3
+
+  windows_package:
+    name: Package and test Windows x64 installer
+    needs: [versions, windows_build]
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      IFW_PACKAGE_ROOT: D:/qgisplus-ifw
+      QGIS_RUNTIME: D:/qgisplus-ifw/packages/org.qgisplus.desktop/data
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+
+      - name: Download staged Windows runtime
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: QGISPlus-runtime-${{ needs.versions.outputs.qgis_version }}-windows-x64
+          path: D:/qgisplus-ifw/packages/org.qgisplus.desktop/data
+
+      - name: Prepare Qt Installer Framework metadata
+        shell: pwsh
+        run: |
+          python scripts/prepare_ifw_package.py `
+            --runtime "$env:QGIS_RUNTIME" `
+            --output "$env:IFW_PACKAGE_ROOT" `
+            --version "${{ needs.versions.outputs.qgis_version }}" `
+            --release-date "$(Get-Date -Format yyyy-MM-dd)" `
+            --license LICENSE `
+            --install-script packaging/ifw/installscript.qs
+
+      - name: Install Qt Installer Framework 4.7
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check aqtinstall==3.3.0
+          python -m aqt install-tool `
+            windows desktop tools_ifw qt.tools.ifw.47 `
+            --outputdir "$env:RUNNER_TEMP/QtIFW"
+
+          $ifwBin = "$env:RUNNER_TEMP/QtIFW/Tools/QtInstallerFramework/4.7/bin"
+          $requiredTools = @("binarycreator.exe", "installerbase.exe")
+          foreach ($tool in $requiredTools) {
+            if (-not (Test-Path -LiteralPath "$ifwBin/$tool" -PathType Leaf)) {
+              throw "Qt Installer Framework tool is missing: $ifwBin/$tool"
+            }
+          }
+          $ifwBin | Out-File `
+            -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Create offline Windows installer
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          $installer = Get-ChildItem "$env:QGIS_BUILD/*.exe" |
-            Select-Object -First 1
-          if (-not $installer) { throw "QGIS Windows NSIS installer was not generated" }
-          $target = "dist/QGISPlus-${{ needs.versions.outputs.qgis_version }}-windows-x64-setup.exe"
-          Copy-Item $installer.FullName $target
+          $installer = (
+            Resolve-Path dist
+          ).Path + "/QGISPlus-${{ needs.versions.outputs.qgis_version }}-windows-x64-setup.exe"
+          $ifwBin = "$env:RUNNER_TEMP/QtIFW/Tools/QtInstallerFramework/4.7/bin"
+          $log = "$env:RUNNER_TEMP/qtifw-binarycreator.log"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          & "$ifwBin/binarycreator.exe" `
+            --offline-only `
+            -t "$ifwBin/installerbase.exe" `
+            -p "$env:IFW_PACKAGE_ROOT/packages" `
+            -c "$env:IFW_PACKAGE_ROOT/config/config.xml" `
+            "$installer" 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) {
+            throw "QtIFW binarycreator failed with exit code $LASTEXITCODE"
+          }
+          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+            throw "QtIFW did not generate the Windows installer"
+          }
+
+      - name: Silently install and verify QGIS+
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem dist/*-setup.exe | Select-Object -First 1
+          if (-not $installer) {
+            throw "QGIS+ installer was not found"
+          }
+          $testRoot = "$env:RUNNER_TEMP/QGISPlusSmoke"
+
+          & $installer.FullName `
+            --root "$testRoot" `
+            --accept-licenses `
+            --default-answer `
+            --confirm-command `
+            install org.qgisplus.desktop
+          if ($LASTEXITCODE -ne 0) {
+            throw "QGIS+ silent installation failed with exit code $LASTEXITCODE"
+          }
+
+          $qgisProcess = "$testRoot/bin/qgis_process.exe"
+          $stylePlugin = (
+            "$testRoot/bin/Qt6/plugins/styles/qgisplusstyle.dll"
+          )
+          if (-not (Test-Path -LiteralPath $qgisProcess -PathType Leaf)) {
+            throw "Installed qgis_process.exe was not found"
+          }
+          if (-not (Test-Path -LiteralPath $stylePlugin -PathType Leaf)) {
+            throw "Installed Qlementine style plugin was not found"
+          }
+          & $qgisProcess --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installed qgis_process.exe failed its version check"
+          }
+
+          $maintenanceTool = "$testRoot/QGISPlusMaintenanceTool.exe"
+          if (-not (Test-Path -LiteralPath $maintenanceTool -PathType Leaf)) {
+            throw "QtIFW maintenance tool was not installed"
+          }
+          & $maintenanceTool `
+            --accept-licenses `
+            --default-answer `
+            --confirm-command `
+            purge
+          if ($LASTEXITCODE -ne 0) {
+            throw "QGIS+ uninstall test failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Upload QtIFW diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: QGISPlus-QtIFW-diagnostics-${{ needs.versions.outputs.qgis_version }}
+          path: ${{ runner.temp }}/qtifw-binarycreator.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: QGISPlus-${{ needs.versions.outputs.qgis_version }}-windows-x64
           path: dist/*-setup.exe
@@ -243,6 +400,7 @@ jobs:
             -D WITH_GEOGRAPHICLIB=OFF \
             -D WITH_SFCGAL=ON \
             -D WITH_PROJ_DATA=ON \
+            -D WITH_QSCIAPI=OFF \
             -D VCPKG_TARGET_TRIPLET="${{ matrix.triplet }}" \
             -D VCPKG_HOST_TRIPLET="${{ matrix.triplet }}" \
             -D CMAKE_OSX_DEPLOYMENT_TARGET="${{ matrix.deployment_target }}" \
@@ -275,6 +433,18 @@ jobs:
           cmake --build "${QGIS_BUILD}"
           cmake --build "${QGIS_BUILD}" --target bundle
 
+      - name: Verify bundled macOS application
+        run: |
+          APP_PATH="$(find "${QGIS_BUILD}/_CPack_Packages/Darwin/External" \
+            -type d -name 'QGIS+.app' -print -quit)"
+          test -n "${APP_PATH}"
+          test -x "${APP_PATH}/Contents/MacOS/QGIS+"
+          STYLE_PLUGIN="$(find "${APP_PATH}/Contents/PlugIns/styles" \
+            -maxdepth 1 -type f -iname '*qgisplusstyle*' -print -quit)"
+          test -n "${STYLE_PLUGIN}"
+          QT_QPA_PLATFORM=offscreen \
+            "${APP_PATH}/Contents/MacOS/QGIS+" --version
+
       - name: Create architecture-specific DMG
         run: |
           APP_PATH="$(find "${QGIS_BUILD}/_CPack_Packages/Darwin/External" \
@@ -297,7 +467,7 @@ jobs:
   release:
     name: Publish tagged build
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [versions, windows, macos]
+    needs: [versions, windows_package, macos]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
