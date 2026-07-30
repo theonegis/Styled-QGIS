@@ -1,0 +1,83 @@
+# CMake / Ninja
+/build*/
+/out/
+/cmake-build-*/
+/CMakeFiles/
+/Testing/
+/_CPack_Packages/
+CMakeCache.txt
+CMakeScripts/
+CPackConfig.cmake
+CPackSourceConfig.cmake
+CTestTestfile.cmake
+cmake_install.cmake
+compile_commands.json
+install_manifest.txt
+build.ninja
+.ninja_deps
+.ninja_log
+CMakeUserPresets.json
+
+# IDE / editor
+.cache/
+.clangd/
+.idea/
+.vscode/
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+
+# Prepared QGIS/Qlementine sources and vcpkg state
+/upstream/
+/vcpkg_installed/
+/downloads/
+/packages/
+
+# Generated packages and staging directories
+/artifacts/
+/dist/
+/stage/
+/versions.json
+*.dmg
+*.msi
+*.exe
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.tgz
+
+# Build logs and crash output
+*.log
+*.dmp
+*.stackdump
+
+# Platform noise
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local configuration and signing material must never enter Git
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.cer
+*.crt
+*.key
+*.pem
+*.mobileprovision

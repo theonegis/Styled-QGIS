@@ -1,0 +1,314 @@
+name: Build QGIS+
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+  schedule:
+    # 每周一检查一次上游；手动运行可随时重新构建当前最新稳定版。
+    - cron: "17 2 * * 1"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: qgis-plus-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  versions:
+    name: Resolve stable releases
+    runs-on: ubuntu-24.04
+    outputs:
+      qgis_tag: ${{ steps.releases.outputs.qgis_tag }}
+      qgis_version: ${{ steps.releases.outputs.qgis_version }}
+      qlementine_tag: ${{ steps.releases.outputs.qlementine_tag }}
+      qlementine_version: ${{ steps.releases.outputs.qlementine_version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Resolve releases by semantic version
+        id: releases
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/resolve_versions.py --output versions.json
+      - name: Validate integration scripts
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+      - name: Show selected versions
+        run: cat versions.json
+
+  windows:
+    name: Windows x64
+    needs: versions
+    runs-on: windows-2022
+    timeout-minutes: 350
+    env:
+      QGIS_SOURCE: ${{ github.workspace }}/upstream/QGIS
+      QLEMENTINE_SOURCE: ${{ github.workspace }}/upstream/qlementine
+      QGIS_BUILD: ${{ github.workspace }}/upstream/QGIS/build
+      STYLE_BUILD: ${{ github.workspace }}/style-build
+      VCPKG_TRIPLET: x64-windows-release
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Prepare patched upstream sources
+        shell: bash
+        run: >-
+          python scripts/prepare_source.py
+          --output upstream
+          --qgis-tag "${{ needs.versions.outputs.qgis_tag }}"
+          --qlementine-tag "${{ needs.versions.outputs.qlementine_tag }}"
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@v4
+        with:
+          cmakeVersion: 3.31.6
+
+      - name: Enable MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Set up QGIS vcpkg
+        uses: ./upstream/QGIS/.github/actions/setup-vcpkg
+
+      - name: Install flex and bison
+        uses: robinraju/release-downloader@v1
+        with:
+          repository: lexxmark/winflexbison
+          fileName: "*.zip"
+          tag: v2.5.24
+          extract: true
+
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis --yes --no-progress
+
+      - name: Configure QGIS and dependencies
+        shell: bash
+        env:
+          X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
+        run: |
+          cmake -S "${QGIS_SOURCE}" -B "${QGIS_BUILD}" -G Ninja \
+            -D CMAKE_BUILD_TYPE=Release \
+            -D QGIS_APP_NAME="QGIS+" \
+            -D WITH_VCPKG=ON \
+            -D CREATE_NSIS=ON \
+            -D CREATE_ZIP=OFF \
+            -D VCPKG_TARGET_TRIPLET="${VCPKG_TRIPLET}" \
+            -D VCPKG_HOST_TRIPLET="${VCPKG_TRIPLET}" \
+            -D WITH_DESKTOP=ON \
+            -D WITH_3D=ON \
+            -D WITH_BINDINGS=ON \
+            -D WITH_GEOGRAPHICLIB=OFF \
+            -D WITH_SFCGAL=ON \
+            -D ENABLE_TESTS=OFF \
+            -D WITH_QTWEBENGINE=OFF \
+            -D ENABLE_UNITY_BUILDS=OFF \
+            -D FLEX_EXECUTABLE="${GITHUB_WORKSPACE}/win_flex.exe" \
+            -D BISON_EXECUTABLE="${GITHUB_WORKSPACE}/win_bison.exe" \
+            -D VCPKG_INSTALL_OPTIONS="--x-buildtrees-root=C:/src" \
+            -D NUGET_USERNAME="${GITHUB_ACTOR}" \
+            -D NUGET_SOURCE="https://nuget.pkg.github.com/qgis/index.json" \
+            -D NUGET_TOKEN="${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Build Qlementine style plugin with QGIS Qt
+        shell: bash
+        run: |
+          cmake -S "${GITHUB_WORKSPACE}" -B "${STYLE_BUILD}" -G Ninja \
+            -D CMAKE_BUILD_TYPE=Release \
+            -D CMAKE_PREFIX_PATH="${QGIS_BUILD}/vcpkg_installed/${VCPKG_TRIPLET}" \
+            -D QGISPLUS_QLEMENTINE_SOURCE_DIR="${QLEMENTINE_SOURCE}" \
+            -D QGISPLUS_QLEMENTINE_TAG="${{ needs.versions.outputs.qlementine_tag }}"
+          cmake --build "${STYLE_BUILD}" --config Release
+          export PATH="${QGIS_BUILD}/vcpkg_installed/${VCPKG_TRIPLET}/bin:${PATH}"
+          ctest --test-dir "${STYLE_BUILD}" -C Release --output-on-failure
+
+          STYLE_PLUGIN="$(find "${STYLE_BUILD}/plugins/styles" \
+            -type f -iname 'qgisplusstyle.dll' -print -quit)"
+          test -n "${STYLE_PLUGIN}"
+          cmake -D "QGISPLUS_STYLE_PLUGIN=${STYLE_PLUGIN}" "${QGIS_BUILD}"
+
+      - name: Build and bundle QGIS+
+        shell: bash
+        run: |
+          cmake --build "${QGIS_BUILD}" --config Release
+          cmake --build "${QGIS_BUILD}" --target bundle --config Release
+
+      - name: Rename Windows installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $installer = Get-ChildItem "$env:QGIS_BUILD/*.exe" |
+            Select-Object -First 1
+          if (-not $installer) { throw "QGIS Windows NSIS installer was not generated" }
+          $target = "dist/QGISPlus-${{ needs.versions.outputs.qgis_version }}-windows-x64-setup.exe"
+          Copy-Item $installer.FullName $target
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: QGISPlus-${{ needs.versions.outputs.qgis_version }}-windows-x64
+          path: dist/*-setup.exe
+          if-no-files-found: error
+          compression-level: 0
+
+  macos:
+    name: macOS ${{ matrix.name }}
+    needs: versions
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Intel
+            os: macos-15-intel
+            arch: x86_64
+            triplet: x64-osx-dynamic-release
+            deployment_target: "10.15"
+            artifact_arch: intel
+          - name: Apple-Silicon
+            os: macos-15
+            arch: arm64
+            triplet: arm64-osx-dynamic-release
+            deployment_target: "11.0"
+            artifact_arch: arm64
+    env:
+      QGIS_SOURCE: ${{ github.workspace }}/upstream/QGIS
+      QLEMENTINE_SOURCE: ${{ github.workspace }}/upstream/qlementine
+      QGIS_BUILD: ${{ github.workspace }}/upstream/QGIS/build
+      STYLE_BUILD: ${{ github.workspace }}/style-build
+      FC: gfortran
+      GCC_VERSION: "15"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Prepare patched upstream sources
+        run: >-
+          python scripts/prepare_source.py
+          --output upstream
+          --qgis-tag "${{ needs.versions.outputs.qgis_tag }}"
+          --qlementine-tag "${{ needs.versions.outputs.qlementine_tag }}"
+
+      - name: Install build tools
+        run: |
+          brew install automake bison flex gnu-sed autoconf-archive \
+            nasm libtool fdupes swig mono
+          echo "$(brew --prefix bison)/bin" >> "${GITHUB_PATH}"
+          echo "$(brew --prefix flex)/bin" >> "${GITHUB_PATH}"
+          echo "$(brew --prefix libtool)/bin" >> "${GITHUB_PATH}"
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@v4
+        with:
+          cmakeVersion: 3.30.4
+
+      - name: Set up QGIS vcpkg
+        uses: ./upstream/QGIS/.github/actions/setup-vcpkg
+
+      - name: Configure gfortran
+        run: |
+          if [[ "${{ matrix.arch }}" == "arm64" ]]; then
+            sudo ln -fs "/opt/homebrew/bin/gfortran-${GCC_VERSION}" /usr/local/bin/gfortran
+            GCC_PREFIX=/opt/homebrew
+          else
+            sudo ln -fs "/usr/local/bin/gfortran-${GCC_VERSION}" /usr/local/bin/gfortran
+            GCC_PREFIX=/usr/local
+          fi
+          sudo mkdir -p /usr/local/gfortran
+          sudo ln -sf "${GCC_PREFIX}"/Cellar/gcc@${GCC_VERSION}/*/lib/gcc/${GCC_VERSION} \
+            /usr/local/gfortran/lib
+
+      - name: Configure QGIS and dependencies
+        env:
+          X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
+        run: |
+          cmake -S "${QGIS_SOURCE}" -B "${QGIS_BUILD}" -G Ninja \
+            -D QGIS_APP_NAME="QGIS+" \
+            -D WITH_VCPKG=ON \
+            -D WITH_QTWEBENGINE=OFF \
+            -D WITH_BINDINGS=ON \
+            -D WITH_ORACLE=ON \
+            -D WITH_GEOGRAPHICLIB=OFF \
+            -D WITH_SFCGAL=ON \
+            -D WITH_PROJ_DATA=ON \
+            -D VCPKG_TARGET_TRIPLET="${{ matrix.triplet }}" \
+            -D VCPKG_HOST_TRIPLET="${{ matrix.triplet }}" \
+            -D CMAKE_OSX_DEPLOYMENT_TARGET="${{ matrix.deployment_target }}" \
+            -D CMAKE_OSX_ARCHITECTURES="${{ matrix.arch }}" \
+            -D ENABLE_UNITY_BUILDS=ON \
+            -D NUGET_USERNAME="${GITHUB_ACTOR}" \
+            -D NUGET_SOURCE="https://nuget.pkg.github.com/qgis/index.json" \
+            -D NUGET_TOKEN="${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Build Qlementine style plugin with QGIS Qt
+        run: |
+          cmake -S "${GITHUB_WORKSPACE}" -B "${STYLE_BUILD}" -G Ninja \
+            -D CMAKE_BUILD_TYPE=Release \
+            -D CMAKE_PREFIX_PATH="${QGIS_BUILD}/vcpkg_installed/${{ matrix.triplet }}" \
+            -D CMAKE_OSX_DEPLOYMENT_TARGET="${{ matrix.deployment_target }}" \
+            -D CMAKE_OSX_ARCHITECTURES="${{ matrix.arch }}" \
+            -D QGISPLUS_QLEMENTINE_SOURCE_DIR="${QLEMENTINE_SOURCE}" \
+            -D QGISPLUS_QLEMENTINE_TAG="${{ needs.versions.outputs.qlementine_tag }}"
+          cmake --build "${STYLE_BUILD}"
+          ctest --test-dir "${STYLE_BUILD}" --output-on-failure
+
+          STYLE_PLUGIN="$(find "${STYLE_BUILD}/plugins/styles" \
+            -type f -iname '*qgisplusstyle*' -print -quit)"
+          test -n "${STYLE_PLUGIN}"
+          cmake -D "QGISPLUS_STYLE_PLUGIN=${STYLE_PLUGIN}" "${QGIS_BUILD}"
+
+      - name: Build and bundle QGIS+
+        run: |
+          cmake --build "${QGIS_BUILD}"
+          cmake --build "${QGIS_BUILD}" --target bundle
+
+      - name: Create architecture-specific DMG
+        run: |
+          APP_PATH="$(find "${QGIS_BUILD}/_CPack_Packages/Darwin/External" \
+            -type d -name 'QGIS+.app' -print -quit)"
+          test -n "${APP_PATH}"
+          mkdir -p dist
+          hdiutil create \
+            -volname "QGIS+" \
+            -srcfolder "${APP_PATH}" \
+            -ov -format UDZO \
+            "dist/QGISPlus-${{ needs.versions.outputs.qgis_version }}-macos-${{ matrix.artifact_arch }}.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: QGISPlus-${{ needs.versions.outputs.qgis_version }}-macos-${{ matrix.artifact_arch }}
+          path: dist/*.dmg
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Publish tagged build
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [versions, windows, macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: QGISPlus-${{ needs.versions.outputs.qgis_version }}-*
+          path: dist
+          merge-multiple: true
+      - name: Create release and upload packages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || \
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "QGIS+ ${GITHUB_REF_NAME}" \
+              --notes "QGIS ${{ needs.versions.outputs.qgis_version }} with Qlementine ${{ needs.versions.outputs.qlementine_version }}."
+          gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
