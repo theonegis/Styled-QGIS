@@ -75,8 +75,17 @@ class WorkflowTests(unittest.TestCase):
             "$drive = Split-Path -Qualifier $env:RUNNER_TEMP",
             windows_job,
         )
+        self.assertIn("shell: powershell", windows_job)
+        self.assertIn(
+            "iex (iwr -useb https://aka.ms/vcpkg-init.ps1)",
+            windows_job,
+        )
         self.assertIn('VCPKG_ROOT=$vcpkgRoot', windows_job)
         self.assertIn('VCPKG_BUILDTREES_ROOT=$buildtreesRoot', windows_job)
+        self.assertIn(
+            'Join-Path $vcpkgRoot "vcpkg.exe"',
+            windows_job,
+        )
         self.assertIn("VCPKG_BINARY_SOURCES: clear", windows_job)
         self.assertIn(
             "--x-buildtrees-root=${VCPKG_BUILDTREES_ROOT}",
@@ -88,6 +97,7 @@ class WorkflowTests(unittest.TestCase):
         )
         self.assertNotIn("--x-buildtrees-root=C:/src", windows_job)
         self.assertNotIn("-D NUGET_TOKEN=", windows_job)
+        self.assertNotIn("Invoke-Expression $vcpkgInit.Content", windows_job)
 
 
 class VersionResolverTests(unittest.TestCase):

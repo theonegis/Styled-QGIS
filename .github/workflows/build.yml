@@ -79,21 +79,24 @@ jobs:
           arch: x64
 
       - name: Set up QGIS vcpkg on the runner work drive
-        shell: pwsh
+        shell: powershell
         run: |
           $drive = Split-Path -Qualifier $env:RUNNER_TEMP
           $vcpkgRoot = "$drive/.vcpkg"
           $buildtreesRoot = "$drive/src"
 
           $env:VCPKG_ROOT = $vcpkgRoot
-          $vcpkgInit = Invoke-WebRequest `
-            -UseBasicParsing `
-            -Uri https://aka.ms/vcpkg-init.ps1
-          Invoke-Expression $vcpkgInit.Content
+          iex (iwr -useb https://aka.ms/vcpkg-init.ps1)
           New-Item `
             -ItemType Directory `
             -Force `
             -Path $buildtreesRoot | Out-Null
+          $vcpkgExecutable = Join-Path $vcpkgRoot "vcpkg.exe"
+          if (-not (
+            Test-Path -LiteralPath $vcpkgExecutable -PathType Leaf
+          )) {
+            throw "vcpkg initialization did not create $vcpkgExecutable"
+          }
 
           "VCPKG_ROOT=$vcpkgRoot" |
             Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
