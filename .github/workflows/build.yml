@@ -78,8 +78,34 @@ jobs:
         with:
           arch: x64
 
-      - name: Set up QGIS vcpkg
-        uses: ./upstream/QGIS/.github/actions/setup-vcpkg
+      - name: Set up QGIS vcpkg on the runner work drive
+        shell: pwsh
+        run: |
+          $drive = Split-Path -Qualifier $env:RUNNER_TEMP
+          $vcpkgRoot = "$drive/.vcpkg"
+          $buildtreesRoot = "$drive/src"
+
+          $env:VCPKG_ROOT = $vcpkgRoot
+          $vcpkgInit = Invoke-WebRequest `
+            -UseBasicParsing `
+            -Uri https://aka.ms/vcpkg-init.ps1
+          Invoke-Expression $vcpkgInit.Content
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $buildtreesRoot | Out-Null
+
+          "VCPKG_ROOT=$vcpkgRoot" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VCPKG_BUILDTREES_ROOT=$buildtreesRoot" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $vcpkgRoot |
+            Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+          Write-Host "vcpkg root: $vcpkgRoot"
+          Write-Host "vcpkg buildtrees: $buildtreesRoot"
+          Get-PSDrive -PSProvider FileSystem |
+            Format-Table Name, Used, Free, Root
 
       - name: Install flex and bison
         uses: robinraju/release-downloader@28fc21f50d76778e7023361aa1f863e717d3d56f
@@ -93,6 +119,7 @@ jobs:
         shell: bash
         env:
           X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
+          VCPKG_BINARY_SOURCES: clear
         run: |
           cmake -S "${QGIS_SOURCE}" -B "${QGIS_BUILD}" -G Ninja \
             -D CMAKE_BUILD_TYPE=Release \
@@ -112,10 +139,7 @@ jobs:
             -D CMAKE_UNITY_BUILD_BATCH_SIZE=4 \
             -D FLEX_EXECUTABLE="${GITHUB_WORKSPACE}/win_flex.exe" \
             -D BISON_EXECUTABLE="${GITHUB_WORKSPACE}/win_bison.exe" \
-            -D VCPKG_INSTALL_OPTIONS="--x-buildtrees-root=C:/src" \
-            -D NUGET_USERNAME="${GITHUB_ACTOR}" \
-            -D NUGET_SOURCE="https://nuget.pkg.github.com/qgis/index.json" \
-            -D NUGET_TOKEN="${{ secrets.GITHUB_TOKEN }}"
+            -D VCPKG_INSTALL_OPTIONS="--x-buildtrees-root=${VCPKG_BUILDTREES_ROOT}"
 
       - name: Build Qlementine style plugin with QGIS Qt
         shell: bash

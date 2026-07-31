@@ -60,6 +60,35 @@ class WorkflowTests(unittest.TestCase):
         )
         self.assertNotIn("ilammy/msvc-dev-cmd@", workflow)
 
+    def test_windows_vcpkg_uses_runner_work_drive_without_binary_cache(
+        self,
+    ) -> None:
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github/workflows/build.yml"
+        ).read_text(encoding="utf-8")
+        windows_job = workflow.split("  windows_build:", 1)[1].split(
+            "  windows_package:", 1
+        )[0]
+
+        self.assertIn(
+            "$drive = Split-Path -Qualifier $env:RUNNER_TEMP",
+            windows_job,
+        )
+        self.assertIn('VCPKG_ROOT=$vcpkgRoot', windows_job)
+        self.assertIn('VCPKG_BUILDTREES_ROOT=$buildtreesRoot', windows_job)
+        self.assertIn("VCPKG_BINARY_SOURCES: clear", windows_job)
+        self.assertIn(
+            "--x-buildtrees-root=${VCPKG_BUILDTREES_ROOT}",
+            windows_job,
+        )
+        self.assertNotIn(
+            "uses: ./upstream/QGIS/.github/actions/setup-vcpkg",
+            windows_job,
+        )
+        self.assertNotIn("--x-buildtrees-root=C:/src", windows_job)
+        self.assertNotIn("-D NUGET_TOKEN=", windows_job)
+
 
 class VersionResolverTests(unittest.TestCase):
     def test_qgis_uses_semver_not_release_time(self) -> None:
