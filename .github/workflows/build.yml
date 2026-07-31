@@ -74,7 +74,9 @@ jobs:
           cmakeVersion: 3.31.6
 
       - name: Enable MSVC environment
-        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        uses: TheMrMilchmann/setup-msvc-dev@79dac248aac9d0059f86eae9d8b5bfab4e95e97c # v4.0.0
+        with:
+          arch: x64
 
       - name: Set up QGIS vcpkg
         uses: ./upstream/QGIS/.github/actions/setup-vcpkg
@@ -360,6 +362,7 @@ jobs:
 
       - name: Install build tools
         run: |
+          brew untap aws/tap || true
           brew install automake bison flex gnu-sed autoconf-archive \
             nasm libtool fdupes swig mono
           echo "$(brew --prefix bison)/bin" >> "${GITHUB_PATH}"

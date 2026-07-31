@@ -47,6 +47,19 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("Verify bundled macOS application", workflow)
         self.assertNotIn("-D CREATE_NSIS=ON", workflow)
 
+    def test_workflow_avoids_hosted_runner_warnings(self) -> None:
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github/workflows/build.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("brew untap aws/tap || true", workflow)
+        self.assertIn(
+            "TheMrMilchmann/setup-msvc-dev@"
+            "79dac248aac9d0059f86eae9d8b5bfab4e95e97c",
+            workflow,
+        )
+        self.assertNotIn("ilammy/msvc-dev-cmd@", workflow)
+
 
 class VersionResolverTests(unittest.TestCase):
     def test_qgis_uses_semver_not_release_time(self) -> None:
