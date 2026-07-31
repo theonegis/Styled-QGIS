@@ -20,7 +20,9 @@ from resolve_versions import QGIS_RELEASE_RE, _select_release
 class WorkflowTests(unittest.TestCase):
     def test_remote_actions_use_full_commit_sha(self) -> None:
         workflows = Path(__file__).resolve().parents[1] / ".github/workflows"
-        full_sha = re.compile(r"^[^/\s@]+/[^/\s@]+@[0-9a-f]{40}$")
+        full_sha = re.compile(
+            r"^[^/\s@]+/[^/\s@]+(?:/[^/\s@]+)*@[0-9a-f]{40}$"
+        )
 
         # 固定完整提交既能避免上游标签漂移，也能在推送前发现 SHA 截断。
         for workflow in workflows.glob("*.yml"):
@@ -60,7 +62,7 @@ class WorkflowTests(unittest.TestCase):
         )
         self.assertNotIn("ilammy/msvc-dev-cmd@", workflow)
 
-    def test_windows_vcpkg_uses_runner_work_drive_without_binary_cache(
+    def test_windows_vcpkg_uses_runner_work_drive_and_resumable_cache(
         self,
     ) -> None:
         workflow = (
@@ -83,10 +85,38 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('VCPKG_ROOT=$vcpkgRoot', windows_job)
         self.assertIn('VCPKG_BUILDTREES_ROOT=$buildtreesRoot', windows_job)
         self.assertIn(
+            'X_VCPKG_REGISTRIES_CACHE=$registriesRoot',
+            windows_job,
+        )
+        self.assertIn('VCPKG_DOWNLOADS=$downloadsRoot', windows_job)
+        self.assertIn(
+            '$registriesRoot = Join-Path $vcpkgRoot "registries"',
+            windows_job,
+        )
+        self.assertIn(
+            '$downloadsRoot = Join-Path $vcpkgRoot "downloads"',
+            windows_job,
+        )
+        self.assertIn(
             'Join-Path $vcpkgRoot "vcpkg.exe"',
             windows_job,
         )
-        self.assertIn("VCPKG_BINARY_SOURCES: clear", windows_job)
+        self.assertIn(
+            "VCPKG_BINARY_SOURCES: "
+            "clear;files,D:/vcpkg-binary-cache,readwrite",
+            windows_job,
+        )
+        self.assertIn("Restore resumable vcpkg binary cache", windows_job)
+        self.assertIn("Save resumable vcpkg binary cache", windows_job)
+        self.assertIn("actions/cache/restore@cdf6c1fa", windows_job)
+        self.assertIn("actions/cache/save@cdf6c1fa", windows_job)
+        self.assertIn("github.run_attempt", windows_job)
+        self.assertIn("continue-on-error: true", windows_job)
+        self.assertIn("timeout-minutes: 300", windows_job)
+        self.assertIn(
+            "steps.configure-qgis.outcome != 'success'",
+            windows_job,
+        )
         self.assertIn(
             "--x-buildtrees-root=${VCPKG_BUILDTREES_ROOT}",
             windows_job,
