@@ -19,9 +19,10 @@ GitHub Actions 默认构建：
 Linux 不构建 Qlementine 版本。Linux 用户可直接使用发行版提供的 QGIS，
 并通过 Kvantum 或桌面 Qt Style 统一外观。
 
-工作流每周一自动检查上游，也可在 Actions 页面手动运行。普通运行的结果
-保存在 Actions Artifacts；推送本工程的 `v*` 标签时，三个安装包还会自动
-上传到对应的 GitHub Release。
+工作流每周一自动检查上游，也可在 Actions 页面手动运行。普通运行会跟踪
+最新稳定版本，结果保存在 Actions Artifacts；推送形如 `v4.2.1` 或
+`v4.2.1-r1` 的标签时，构建固定使用对应的 QGIS 版本，三个安装包还会自动
+上传到同名 GitHub Release，避免 Release 标签与安装包版本不一致。
 
 > macOS CI 产出的 DMG 默认未签名、未公证。公开分发前，需要配置 Apple
 > Developer ID、签名和 notarization；否则 Gatekeeper 会提示来源未知。
@@ -51,6 +52,8 @@ QlementineStyle（现代控件绘制、尺寸、动画和 Palette）
 - QGIS 只选择稳定的 `final-4_x_y`；
 - Qlementine 只选择稳定的 `vX.Y.Z`；
 - 两者均按语义版本号取最大值，不依赖发布时间。
+- 标签构建从 `v4.2.1[-rN]` 固定出 QGIS `final-4_2_1`，手动和定时构建
+  才自动跟踪最新 QGIS 4.x。
 
 不能直接使用 GitHub `/releases/latest`：QGIS 最新版和 LTR 经常在同一天
 发布，当前接口可能把发布时间晚一秒的 3.x LTR 当成 latest，而不是版本号
@@ -60,6 +63,12 @@ QlementineStyle（现代控件绘制、尺寸、动画和 Palette）
 
 ```bash
 python3 scripts/resolve_versions.py
+```
+
+模拟标签构建并核对固定版本：
+
+```bash
+python3 scripts/resolve_versions.py --build-tag v4.2.1-r1
 ```
 
 准备完整、已打补丁的上游源码：
@@ -72,7 +81,7 @@ python3 scripts/prepare_source.py --output upstream
 
 1. 浅克隆选中的 QGIS Release；
 2. 浅克隆选中的 Qlementine Release；
-3. 对 QGIS 应用两处带锚点校验的幂等修改；
+3. 对 QGIS 应用三处带锚点校验的幂等修改；
 4. 写出 `upstream/versions.json`，便于审计和复现。
 
 如果未来 QGIS 修改了相关初始化代码，补丁会明确失败，而不会模糊匹配后
@@ -154,6 +163,15 @@ QLEMENTINE_TAG=v1.4.2 ./scripts/build_style.sh
 用户手动重跑。Windows 的源码、vcpkg、Python `TEMP/TMP` 和缓存统一位于
 runner 的 `D:` 工作盘，避免 Python Versioneer 跨盘计算相对路径失败。如果
 安装器阶段失败，可以仅重跑失败的打包 Job，复用同一次运行已上传的暂存运行时。
+Windows 会屏蔽 hosted runner 上可能被 CMake 误选、但无法完成 LAPACK
+探测的 LLVM Flang，让 QGIS 锁定版 vcpkg 使用其自带的 MinGW gfortran。
+该路径同时通过 `vcpkg-gfortran` 安装所需运行时 DLL，避免“依赖编译通过、
+安装后的程序却缺少 Fortran DLL”的隐患。缓存的恢复与保存只作为加速项，
+服务临时不可用不会阻断正式构建；正式配置完成后还会再次保存完整缓存。
+
+macOS 的 vcpkg 二进制包使用当前仓库所有者名下的 GitHub Packages NuGet
+源读写。这样既能在后续构建中复用依赖，也不会错误地尝试向 QGIS 官方组织的
+包源写入并触发权限错误。
 
 macOS 显式关闭上游用于开发阶段生成 QScintilla API/PAP 文件的
 `WITH_QSCIAPI`。这不会关闭 Python、PyQGIS 或 Processing，可避免 vcpkg

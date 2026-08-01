@@ -17,6 +17,7 @@ from typing import Any, Iterable
 
 QGIS_RELEASE_RE = re.compile(r"^final-(\d+)_(\d+)_(\d+)$")
 QLEMENTINE_RELEASE_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:\.\d+)?$")
+BUILD_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-r\d+)?$")
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ def _select_release(
     pattern: re.Pattern[str],
     *,
     required_major: int | None = None,
+    required_version: tuple[int, int, int] | None = None,
 ) -> Release:
     candidates: list[tuple[tuple[int, int, int], dict[str, Any]]] = []
     for release in releases:
@@ -71,10 +73,15 @@ def _select_release(
         version_tuple = tuple(int(part) for part in match.groups()[:3])
         if required_major is not None and version_tuple[0] != required_major:
             continue
+        if required_version is not None and version_tuple != required_version:
+            continue
         candidates.append((version_tuple, release))
 
     if not candidates:
-        qualifier = f" major {required_major}" if required_major else ""
+        if required_version is not None:
+            qualifier = " version " + ".".join(map(str, required_version))
+        else:
+            qualifier = f" major {required_major}" if required_major else ""
         raise RuntimeError(f"No stable{qualifier} release found for {repository}")
 
     version_tuple, selected = max(candidates, key=lambda item: item[0])
@@ -86,15 +93,29 @@ def _select_release(
     )
 
 
-def resolve(qgis_major: int = 4) -> dict[str, Release]:
+def _qgis_version_from_build_tag(build_tag: str) -> tuple[int, int, int] | None:
+    if not build_tag:
+        return None
+    match = BUILD_TAG_RE.fullmatch(build_tag)
+    if match is None:
+        raise RuntimeError(
+            "Release build tag must look like v4.2.1 or v4.2.1-r1; "
+            f"received {build_tag!r}"
+        )
+    return tuple(int(part) for part in match.groups())
+
+
+def resolve(qgis_major: int = 4, build_tag: str = "") -> dict[str, Release]:
     # GitHub 的 /releases/latest 按发布时间判断；QGIS LR 与 LTR 同日发布时，
     # 它可能返回版本号更低的 LTR，因此这里显式按语义版本取最大值。
+    required_version = _qgis_version_from_build_tag(build_tag)
     return {
         "qgis": _select_release(
             "qgis/QGIS",
             _github_releases("qgis/QGIS"),
             QGIS_RELEASE_RE,
             required_major=qgis_major,
+            required_version=required_version,
         ),
         "qlementine": _select_release(
             "oclero/qlementine",
@@ -114,6 +135,11 @@ def _write_github_outputs(releases: dict[str, Release], path: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--qgis-major", type=int, default=4)
+    parser.add_argument(
+        "--build-tag",
+        default="",
+        help="Pin a tagged build to its QGIS version (v4.2.1[-rN])",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--github-output",
@@ -125,7 +151,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        releases = resolve(args.qgis_major)
+        releases = resolve(args.qgis_major, args.build_tag)
     except RuntimeError as error:
         print(error, file=sys.stderr)
         return 1

@@ -11,7 +11,8 @@ on:
 
 permissions:
   contents: write
-  packages: read
+  # macOS vcpkg 二进制缓存发布到当前仓库所有者的 GitHub Packages。
+  packages: write
 
 concurrency:
   group: qgis-plus-${{ github.ref }}
@@ -35,7 +36,11 @@ jobs:
         id: releases
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python scripts/resolve_versions.py --output versions.json
+          BUILD_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: >-
+          python scripts/resolve_versions.py
+          --output versions.json
+          --build-tag "${BUILD_TAG}"
       - name: Validate integration scripts
         run: python -m unittest discover -s tests -p "test_*.py" -v
       - name: Show selected versions
@@ -139,6 +144,7 @@ jobs:
 
       - name: Restore Windows dependency cache
         id: warm-vcpkg-cache
+        continue-on-error: true
         uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: D:/vcpkg-binary-cache
@@ -174,6 +180,7 @@ jobs:
         if: >-
           always() &&
           steps.warm-vcpkg-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
         uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: D:/vcpkg-binary-cache
@@ -191,10 +198,11 @@ jobs:
               -ErrorAction SilentlyContinue
           )
           if ($archives.Count -eq 0) {
-            throw "Dependency warm-up produced no reusable vcpkg archives"
+            "::warning::Dependency warm-up produced no reusable vcpkg archives; the formal build will continue without the optimization."
+          } else {
+            "Cached vcpkg archives: $($archives.Count)" |
+              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           }
-          "Cached vcpkg archives: $($archives.Count)" |
-            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
   windows_build:
     name: Build Windows x64 runtime
@@ -277,6 +285,12 @@ jobs:
             throw "vcpkg initialization did not create $vcpkgExecutable"
           }
 
+          $workDrive = (Split-Path -Qualifier $env:GITHUB_WORKSPACE).ToUpper()
+          $tempDrive = (Split-Path -Qualifier $env:TEMP).ToUpper()
+          if ($workDrive -ne $tempDrive -or $workDrive -ne $drive.ToUpper()) {
+            throw "Workspace, TEMP and vcpkg must use one drive: $workDrive, $tempDrive, $drive"
+          }
+
           "VCPKG_ROOT=$vcpkgRoot" |
             Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "VCPKG_BUILDTREES_ROOT=$buildtreesRoot" |
@@ -298,6 +312,7 @@ jobs:
 
       - name: Restore resumable vcpkg binary cache
         id: vcpkg-cache
+        continue-on-error: true
         uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: D:/vcpkg-binary-cache
@@ -325,6 +340,16 @@ jobs:
           X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
           VCPKG_BINARY_SOURCES: clear;files,D:/vcpkg-binary-cache,readwrite
         run: bash scripts/configure_windows_qgis.sh
+
+      - name: Save completed Windows dependency cache
+        if: >-
+          always() &&
+          steps.vcpkg-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: D:/vcpkg-binary-cache
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
 
       - name: Build Qlementine style plugin with QGIS Qt
         shell: bash
@@ -620,7 +645,7 @@ jobs:
             -D ENABLE_UNITY_BUILDS=ON \
             -D CMAKE_UNITY_BUILD_BATCH_SIZE=4 \
             -D NUGET_USERNAME="${GITHUB_ACTOR}" \
-            -D NUGET_SOURCE="https://nuget.pkg.github.com/qgis/index.json" \
+            -D NUGET_SOURCE="https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" \
             -D NUGET_TOKEN="${{ secrets.GITHUB_TOKEN }}"
 
       - name: Build Qlementine style plugin with QGIS Qt

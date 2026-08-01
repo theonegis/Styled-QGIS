@@ -12,9 +12,13 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from apply_qgis_patch import patch_cmake, patch_main
+from apply_qgis_patch import patch_cmake, patch_main, patch_windows_triplet
 from prepare_ifw_package import PACKAGE_ID, prepare_ifw_package
-from resolve_versions import QGIS_RELEASE_RE, _select_release
+from resolve_versions import (
+    QGIS_RELEASE_RE,
+    _qgis_version_from_build_tag,
+    _select_release,
+)
 
 
 class WorkflowTests(unittest.TestCase):
@@ -139,7 +143,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(windows_jobs.count('"TEMP=$tempRoot"'), 2)
         self.assertEqual(windows_jobs.count('"TMP=$tempRoot"'), 2)
         self.assertEqual(windows_jobs.count('"TMPDIR=$tempRoot"'), 2)
-        self.assertIn("$workDrive -ne $tempDrive", windows_jobs)
+        self.assertEqual(windows_jobs.count("$workDrive -ne $tempDrive"), 2)
         self.assertIn("upstream/QGIS/vcpkg/vcpkg.json", windows_jobs)
         self.assertIn("needs: [versions, windows_dependencies]", windows_build)
         self.assertIn(
@@ -164,6 +168,32 @@ class WorkflowTests(unittest.TestCase):
             configure_script,
         )
         self.assertIn("-D ENABLE_UNITY_BUILDS=ON", configure_script)
+        self.assertGreaterEqual(
+            windows_jobs.count("continue-on-error: true"), 4
+        )
+        self.assertIn("Save completed Windows dependency cache", windows_build)
+        self.assertIn(
+            "the formal build will continue without the optimization",
+            windows_jobs,
+        )
+
+    def test_macos_cache_is_owned_by_the_current_repository(self) -> None:
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github/workflows/build.yml"
+        ).read_text(encoding="utf-8")
+        macos_job = workflow.split("  macos:", 1)[1].split(
+            "  release:", 1
+        )[0]
+
+        self.assertIn("packages: write", workflow)
+        self.assertIn(
+            "https://nuget.pkg.github.com/"
+            "${{ github.repository_owner }}/index.json",
+            macos_job,
+        )
+        self.assertIn('-D NUGET_USERNAME="${GITHUB_ACTOR}"', macos_job)
+        self.assertNotIn("nuget.pkg.github.com/qgis", macos_job)
 
 
 class VersionResolverTests(unittest.TestCase):
@@ -193,6 +223,33 @@ class VersionResolverTests(unittest.TestCase):
         )
         self.assertEqual(selected.tag, "final-4_2_0")
 
+    def test_release_build_tag_pins_exact_qgis_version(self) -> None:
+        releases = [
+            {
+                "tag_name": "final-4_2_0",
+                "draft": False,
+                "prerelease": False,
+            },
+            {
+                "tag_name": "final-4_2_1",
+                "draft": False,
+                "prerelease": False,
+            },
+        ]
+        required_version = _qgis_version_from_build_tag("v4.2.0-r1")
+        selected = _select_release(
+            "qgis/QGIS",
+            releases,
+            QGIS_RELEASE_RE,
+            required_major=4,
+            required_version=required_version,
+        )
+        self.assertEqual(selected.tag, "final-4_2_0")
+
+    def test_invalid_release_build_tag_is_rejected(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "must look like"):
+            _qgis_version_from_build_tag("release-latest")
+
 
 class PatchTests(unittest.TestCase):
     def test_patch_is_idempotent(self) -> None:
@@ -215,15 +272,39 @@ class PatchTests(unittest.TestCase):
                 "endif()\n",
                 encoding="utf-8",
             )
+            triplet = root / "vcpkg/triplets/x64-windows-release.cmake"
+            triplet.parent.mkdir(parents=True)
+            triplet.write_text(
+                "set(VCPKG_TARGET_ARCHITECTURE x64)\n"
+                "set(VCPKG_CRT_LINKAGE dynamic)\n"
+                "set(VCPKG_LIBRARY_LINKAGE dynamic)\n"
+                "set(VCPKG_BUILD_TYPE release)\n",
+                encoding="utf-8",
+            )
 
             patch_main(root)
             patch_cmake(root)
+            patch_windows_triplet(root)
             first_main = main.read_text(encoding="utf-8")
             first_cmake = cmake.read_text(encoding="utf-8")
+            first_triplet = triplet.read_text(encoding="utf-8")
             patch_main(root)
             patch_cmake(root)
+            patch_windows_triplet(root)
             self.assertEqual(first_main, main.read_text(encoding="utf-8"))
             self.assertEqual(first_cmake, cmake.read_text(encoding="utf-8"))
+            self.assertEqual(
+                first_triplet, triplet.read_text(encoding="utf-8")
+            )
+            self.assertIn("CMAKE_IGNORE_PREFIX_PATH", first_triplet)
+            self.assertIn('PORT STREQUAL "vcpkg-gfortran"', first_triplet)
+            self.assertIn(
+                "C:/Program Files/Microsoft Visual Studio/*/*/VC/Tools/Llvm",
+                first_triplet,
+            )
+            self.assertIn(
+                '"${_qgisplus_llvm_prefix}/x64/bin"', first_triplet
+            )
 
 
 class QtIfwPackageTests(unittest.TestCase):
