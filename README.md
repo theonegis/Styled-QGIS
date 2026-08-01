@@ -163,11 +163,13 @@ QLEMENTINE_TAG=v1.4.2 ./scripts/build_style.sh
 用户手动重跑。Windows 的源码、vcpkg、Python `TEMP/TMP` 和缓存统一位于
 runner 的 `D:` 工作盘，避免 Python Versioneer 跨盘计算相对路径失败。如果
 安装器阶段失败，可以仅重跑失败的打包 Job，复用同一次运行已上传的暂存运行时。
-Windows 会屏蔽 hosted runner 上可能被 CMake 误选、但无法完成 LAPACK
-探测的 LLVM Flang，让 QGIS 锁定版 vcpkg 使用其自带的 MinGW gfortran。
-该路径同时通过 `vcpkg-gfortran` 安装所需运行时 DLL，避免“依赖编译通过、
-安装后的程序却缺少 Fortran DLL”的隐患。缓存的恢复与保存只作为加速项，
-服务临时不可用不会阻断正式构建；正式配置完成后还会再次保存完整缓存。
+Windows triplet 会显式设置 vcpkg 当前版本要求的
+`VCPKG_PROVIDED_FORTRAN=ON`，并屏蔽 hosted runner 上可能被旧版 CMake
+逻辑误选、但无法完成 LAPACK 探测的 LLVM Flang。因此新旧 vcpkg 都会使用
+其自带的 MinGW gfortran。该路径同时通过 `vcpkg-gfortran` 安装所需运行时
+DLL，避免“依赖编译通过、安装后的程序却缺少 Fortran DLL”的隐患。缓存的
+恢复与保存只作为加速项，服务临时不可用不会阻断正式构建；正式配置完成后
+还会再次保存完整缓存。
 
 macOS 的 vcpkg 二进制包使用当前仓库所有者名下的 GitHub Packages NuGet
 源读写。这样既能在后续构建中复用依赖，也不会错误地尝试向 QGIS 官方组织的

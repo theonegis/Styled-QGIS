@@ -298,6 +298,7 @@ class PatchTests(unittest.TestCase):
             )
             self.assertIn("CMAKE_IGNORE_PREFIX_PATH", first_triplet)
             self.assertIn('PORT STREQUAL "vcpkg-gfortran"', first_triplet)
+            self.assertIn("set(VCPKG_PROVIDED_FORTRAN ON)", first_triplet)
             self.assertIn(
                 "C:/Program Files/Microsoft Visual Studio/*/*/VC/Tools/Llvm",
                 first_triplet,
@@ -305,6 +306,27 @@ class PatchTests(unittest.TestCase):
             self.assertIn(
                 '"${_qgisplus_llvm_prefix}/x64/bin"', first_triplet
             )
+
+    def test_old_windows_triplet_patch_is_migrated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            triplet = root / "vcpkg/triplets/x64-windows-release.cmake"
+            triplet.parent.mkdir(parents=True)
+            triplet.write_text(
+                "set(VCPKG_TARGET_ARCHITECTURE x64)\n\n"
+                "# QGIS+ hosted-runner Fortran guard\n"
+                'if(PORT STREQUAL "vcpkg-gfortran" OR '
+                'PORT STREQUAL "lapack-reference")\n'
+                "  list(APPEND CMAKE_IGNORE_PATH old/path)\n"
+                "endif()\n",
+                encoding="utf-8",
+            )
+
+            patch_windows_triplet(root)
+            migrated = triplet.read_text(encoding="utf-8")
+            self.assertIn("set(VCPKG_PROVIDED_FORTRAN ON)", migrated)
+            patch_windows_triplet(root)
+            self.assertEqual(migrated, triplet.read_text(encoding="utf-8"))
 
 
 class QtIfwPackageTests(unittest.TestCase):

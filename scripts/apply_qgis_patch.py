@@ -11,6 +11,7 @@ from pathlib import Path
 MAIN_MARKER = "// QGIS+ default style"
 CMAKE_MARKER = "# QGIS+ style plugin"
 WINDOWS_TRIPLET_MARKER = "# QGIS+ hosted-runner Fortran guard"
+WINDOWS_FORTRAN_SWITCH = "set(VCPKG_PROVIDED_FORTRAN ON)"
 
 
 def _replace_once(path: Path, old: str, new: str) -> None:
@@ -100,16 +101,33 @@ def patch_windows_triplet(source: Path) -> None:
     """Prevent an unusable runner Flang from disabling vcpkg-gfortran.
 
     vcpkg's ``vcpkg_find_fortran`` intentionally downloads a matching MSYS2
-    gfortran toolchain when no external compiler is available.  The GitHub
-    Windows image also exposes LLVM tools, and CMake can select ``flang`` even
-    when that executable cannot compile the LAPACK probe.  Ignoring only that
-    LLVM prefix keeps vcpkg's supported fallback active and, importantly,
-    makes the ``vcpkg-gfortran`` port install the required runtime DLLs.
+    gfortran toolchain when ``VCPKG_PROVIDED_FORTRAN`` is enabled.  Older
+    vcpkg tool versions instead infer that fallback when no external compiler
+    is available.  The GitHub Windows image also exposes LLVM tools, and CMake
+    can select ``flang`` even when it cannot compile the LAPACK probe.  The
+    explicit switch handles current vcpkg; ignoring only those LLVM prefixes
+    preserves compatibility with the older fallback and ensures that the
+    ``vcpkg-gfortran`` port installs the required runtime DLLs.
     """
 
     path = source / "vcpkg/triplets/x64-windows-release.cmake"
     content = path.read_text(encoding="utf-8")
     if WINDOWS_TRIPLET_MARKER in content:
+        if WINDOWS_FORTRAN_SWITCH in content:
+            return
+
+        # 兼容已经由旧版 QGIS+ 补丁生成的源码目录；CI 使用干净克隆，
+        # 本地重复运行 prepare_source.py 时也应自动迁移而不是静默跳过。
+        anchor = (
+            'if(PORT STREQUAL "vcpkg-gfortran" OR '
+            'PORT STREQUAL "lapack-reference")\n'
+        )
+        migration = (
+            anchor
+            + "  # Current vcpkg requires an explicit internal Fortran request.\n"
+            + f"  {WINDOWS_FORTRAN_SWITCH}\n\n"
+        )
+        _replace_once(path, anchor, migration)
         return
 
     guard = f"""
@@ -119,6 +137,11 @@ def patch_windows_triplet(source: Path) -> None:
 # usable MSVC-compatible Fortran environment.  LAPACK must then fall back to
 # vcpkg's own MinGW gfortran so its runtime DLLs are packaged as dependencies.
 if(PORT STREQUAL "vcpkg-gfortran" OR PORT STREQUAL "lapack-reference")
+  # vcpkg 2026-07 之后不再在 Windows 上自动探测并回退到内部 Fortran；
+  # 必须由 triplet 明确请求。该开关会同时向 LAPACK 传入 gfortran/gcc，
+  # 并让 vcpkg-gfortran 打包 libgfortran 等运行时 DLL。
+  {WINDOWS_FORTRAN_SWITCH}
+
   # GitHub 的 windows-2022 镜像同时可能包含独立 LLVM，以及不同版本、
   # 不同 Edition 的 Visual Studio 内置 LLVM。使用 glob 避免把 Enterprise
   # 等 Runner 实现细节写死；这里只影响两个需要 Fortran 的端口。
