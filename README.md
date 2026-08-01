@@ -138,7 +138,8 @@ QLEMENTINE_TAG=v1.4.2 ./scripts/build_style.sh
 
 1. 解析上游稳定版本；
 2. 准备并修补 QGIS；
-3. 使用 QGIS 官方 Qt6/vcpkg 依赖配置；
+3. Windows 先在独立 Job 中预热 Qt6/vcpkg 二进制依赖缓存，再由正式编译
+   Job 恢复缓存；macOS 直接使用 QGIS 官方 Qt6/vcpkg 依赖配置；
 4. 用同一 Qt 编译 Qlementine Style 插件并运行发现测试；
 5. 完整编译 QGIS；
 6. 安装到独立的运行时暂存目录并验证关键程序与 Style 插件；
@@ -146,10 +147,13 @@ QLEMENTINE_TAG=v1.4.2 ./scripts/build_style.sh
 8. 对 Windows 安装包执行静默安装、命令行启动和卸载测试；
 9. 对 macOS App 执行无界面启动检查后生成分架构 DMG。
 
-完整 QGIS 编译通常需要数小时。Windows 上游官方 Qt6 CI 自身也可能接近
-GitHub-hosted runner 的时限，因此编译工作流超时设置为 350 分钟。编译与
-Windows 打包被有意拆成两个 Job：如果安装器阶段失败，可以仅重跑失败的
-打包 Job，复用同一次运行已经上传的暂存运行时，无需再次编译 QGIS。
+完整 QGIS 编译通常需要数小时。Windows 冷缓存下的 330 个 vcpkg 包无法稳定
+地在单个 GitHub-hosted runner 时限内完成，因此 Windows 使用三阶段流水线：
+依赖预热、QGIS 正式编译、QtIFW 打包。预热阶段即使达到时间上限，也会保存
+已经完成的二进制包；正式编译阶段在同一次工作流中自动恢复并继续，不再要求
+用户手动重跑。Windows 的源码、vcpkg、Python `TEMP/TMP` 和缓存统一位于
+runner 的 `D:` 工作盘，避免 Python Versioneer 跨盘计算相对路径失败。如果
+安装器阶段失败，可以仅重跑失败的打包 Job，复用同一次运行已上传的暂存运行时。
 
 macOS 显式关闭上游用于开发阶段生成 QScintilla API/PAP 文件的
 `WITH_QSCIAPI`。这不会关闭 Python、PyQGIS 或 Processing，可避免 vcpkg
@@ -165,6 +169,7 @@ Python 在生成 PAP 时同时加载多个 Qt6Core 兼容名导致的构建期�
 │   ├── resolve_versions.py         # 稳定 Release 解析
 │   ├── prepare_source.py           # 拉取上游并生成可构建源码
 │   ├── apply_qgis_patch.py         # 幂等、锚点校验的 QGIS 补丁
+│   ├── configure_windows_qgis.sh    # Windows 两阶段共用的 QGIS 配置参数
 │   └── prepare_ifw_package.py      # 生成并校验 Windows QtIFW 元数据
 ├── packaging/ifw/                  # Windows 安装器组件脚本
 ├── tests/                          # 版本选择、补丁和插件发现测试

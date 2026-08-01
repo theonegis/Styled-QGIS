@@ -41,9 +41,23 @@ class WorkflowTests(unittest.TestCase):
             Path(__file__).resolve().parents[1]
             / ".github/workflows/build.yml"
         ).read_text(encoding="utf-8")
-        self.assertGreaterEqual(workflow.count("-D WITH_QSCIAPI=OFF"), 2)
+        windows_configure = (
+            Path(__file__).resolve().parents[1]
+            / "scripts/configure_windows_qgis.sh"
+        ).read_text(encoding="utf-8")
+        self.assertGreaterEqual(
+            workflow.count("-D WITH_QSCIAPI=OFF")
+            + windows_configure.count("-D WITH_QSCIAPI=OFF"),
+            2,
+        )
+        self.assertIn("windows_dependencies:", workflow)
         self.assertIn("windows_build:", workflow)
         self.assertIn("windows_package:", workflow)
+        self.assertIn("needs: [versions, windows_dependencies]", workflow)
+        self.assertIn("needs: [versions, windows_build]", workflow)
+        self.assertIn(
+            "needs: [versions, windows_package, macos]", workflow
+        )
         self.assertIn("QtInstallerFramework/4.7/bin", workflow)
         self.assertIn("Silently install and verify QGIS+", workflow)
         self.assertIn("Verify bundled macOS application", workflow)
@@ -69,65 +83,87 @@ class WorkflowTests(unittest.TestCase):
             Path(__file__).resolve().parents[1]
             / ".github/workflows/build.yml"
         ).read_text(encoding="utf-8")
-        windows_job = workflow.split("  windows_build:", 1)[1].split(
+        windows_jobs = workflow.split("  windows_dependencies:", 1)[1].split(
+            "  windows_package:", 1
+        )[0]
+        windows_build = workflow.split("  windows_build:", 1)[1].split(
             "  windows_package:", 1
         )[0]
 
         self.assertIn(
             "$drive = Split-Path -Qualifier $env:RUNNER_TEMP",
-            windows_job,
+            windows_jobs,
         )
-        self.assertIn("shell: powershell", windows_job)
+        self.assertIn("shell: powershell", windows_jobs)
         self.assertIn(
             "iex (iwr -useb https://aka.ms/vcpkg-init.ps1)",
-            windows_job,
+            windows_jobs,
         )
-        self.assertIn('VCPKG_ROOT=$vcpkgRoot', windows_job)
-        self.assertIn('VCPKG_BUILDTREES_ROOT=$buildtreesRoot', windows_job)
+        self.assertIn('VCPKG_ROOT=$vcpkgRoot', windows_jobs)
+        self.assertIn('VCPKG_BUILDTREES_ROOT=$buildtreesRoot', windows_jobs)
         self.assertIn(
             'X_VCPKG_REGISTRIES_CACHE=$registriesRoot',
-            windows_job,
+            windows_jobs,
         )
-        self.assertIn('VCPKG_DOWNLOADS=$downloadsRoot', windows_job)
+        self.assertIn('VCPKG_DOWNLOADS=$downloadsRoot', windows_jobs)
         self.assertIn(
             '$registriesRoot = Join-Path $vcpkgRoot "registries"',
-            windows_job,
+            windows_jobs,
         )
         self.assertIn(
             '$downloadsRoot = Join-Path $vcpkgRoot "downloads"',
-            windows_job,
+            windows_jobs,
         )
         self.assertIn(
             'Join-Path $vcpkgRoot "vcpkg.exe"',
-            windows_job,
+            windows_jobs,
         )
         self.assertIn(
             "VCPKG_BINARY_SOURCES: "
             "clear;files,D:/vcpkg-binary-cache,readwrite",
-            windows_job,
+            windows_jobs,
         )
-        self.assertIn("Restore resumable vcpkg binary cache", windows_job)
-        self.assertIn("Save resumable vcpkg binary cache", windows_job)
-        self.assertIn("actions/cache/restore@cdf6c1fa", windows_job)
-        self.assertIn("actions/cache/save@cdf6c1fa", windows_job)
-        self.assertIn("github.run_attempt", windows_job)
-        self.assertIn("continue-on-error: true", windows_job)
-        self.assertIn("timeout-minutes: 300", windows_job)
-        self.assertIn(
-            "steps.configure-qgis.outcome != 'success'",
-            windows_job,
+        self.assertGreaterEqual(
+            windows_jobs.count("actions/cache/restore@cdf6c1fa"), 2
         )
+        self.assertIn("actions/cache/save@cdf6c1fa", windows_jobs)
+        self.assertIn("Warm QGIS dependencies", windows_jobs)
+        self.assertIn("timeout-minutes: 330", windows_jobs)
+        self.assertIn("Verify dependency cache is resumable", windows_jobs)
+        self.assertEqual(
+            windows_jobs.count(
+                "Keep Python temporary files on the runner work drive"
+            ),
+            2,
+        )
+        self.assertEqual(windows_jobs.count('"TEMP=$tempRoot"'), 2)
+        self.assertEqual(windows_jobs.count('"TMP=$tempRoot"'), 2)
+        self.assertEqual(windows_jobs.count('"TMPDIR=$tempRoot"'), 2)
+        self.assertIn("$workDrive -ne $tempDrive", windows_jobs)
+        self.assertIn("upstream/QGIS/vcpkg/vcpkg.json", windows_jobs)
+        self.assertIn("needs: [versions, windows_dependencies]", windows_build)
         self.assertIn(
-            "--x-buildtrees-root=${VCPKG_BUILDTREES_ROOT}",
-            windows_job,
+            "run: bash scripts/configure_windows_qgis.sh", windows_build
         )
         self.assertNotIn(
             "uses: ./upstream/QGIS/.github/actions/setup-vcpkg",
-            windows_job,
+            windows_jobs,
         )
-        self.assertNotIn("--x-buildtrees-root=C:/src", windows_job)
-        self.assertNotIn("-D NUGET_TOKEN=", windows_job)
-        self.assertNotIn("Invoke-Expression $vcpkgInit.Content", windows_job)
+        self.assertNotIn("--x-buildtrees-root=C:/src", windows_jobs)
+        self.assertNotIn("-D NUGET_TOKEN=", windows_jobs)
+        self.assertNotIn(
+            "Invoke-Expression $vcpkgInit.Content", windows_jobs
+        )
+
+        configure_script = (
+            Path(__file__).resolve().parents[1]
+            / "scripts/configure_windows_qgis.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            '--x-buildtrees-root=${VCPKG_BUILDTREES_ROOT}',
+            configure_script,
+        )
+        self.assertIn("-D ENABLE_UNITY_BUILDS=ON", configure_script)
 
 
 class VersionResolverTests(unittest.TestCase):

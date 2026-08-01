@@ -41,9 +41,164 @@ jobs:
       - name: Show selected versions
         run: cat versions.json
 
+  windows_dependencies:
+    name: Warm Windows x64 dependency cache
+    needs: versions
+    runs-on: windows-2022
+    timeout-minutes: 350
+    env:
+      QGIS_SOURCE: ${{ github.workspace }}/upstream/QGIS
+      QGIS_BUILD: ${{ github.workspace }}/upstream/QGIS/build
+      VCPKG_BINARY_CACHE_ROOT: D:/vcpkg-binary-cache
+      VCPKG_TRIPLET: x64-windows-release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Keep Python temporary files on the runner work drive
+        shell: pwsh
+        run: |
+          # Versioneer 会对 tempfile 与源码计算相对路径，两者必须位于同一盘。
+          $tempRoot = $env:RUNNER_TEMP
+          New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
+          "TEMP=$tempRoot" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMP=$tempRoot" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMPDIR=$tempRoot" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+
+      - name: Prepare patched upstream sources
+        shell: bash
+        run: >-
+          python scripts/prepare_source.py
+          --output upstream
+          --qgis-tag "${{ needs.versions.outputs.qgis_tag }}"
+          --qlementine-tag "${{ needs.versions.outputs.qlementine_tag }}"
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@f5b8fbb4d77cec1acc5a5f9f0df4beffaf5d98d9
+        with:
+          cmakeVersion: 3.31.6
+
+      - name: Enable MSVC environment
+        uses: TheMrMilchmann/setup-msvc-dev@79dac248aac9d0059f86eae9d8b5bfab4e95e97c # v4.0.0
+        with:
+          arch: x64
+
+      - name: Set up QGIS vcpkg on the runner work drive
+        shell: powershell
+        run: |
+          $drive = Split-Path -Qualifier $env:RUNNER_TEMP
+          $vcpkgRoot = "$drive/.vcpkg"
+          $buildtreesRoot = "$drive/src"
+          $registriesRoot = Join-Path $vcpkgRoot "registries"
+          $downloadsRoot = Join-Path $vcpkgRoot "downloads"
+          $binaryCacheRoot = $env:VCPKG_BINARY_CACHE_ROOT
+
+          $env:VCPKG_ROOT = $vcpkgRoot
+          $env:X_VCPKG_REGISTRIES_CACHE = $registriesRoot
+          $env:VCPKG_DOWNLOADS = $downloadsRoot
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path `
+              $env:TEMP, `
+              $buildtreesRoot, `
+              $registriesRoot, `
+              $downloadsRoot, `
+              $binaryCacheRoot |
+            Out-Null
+          iex (iwr -useb https://aka.ms/vcpkg-init.ps1)
+          $vcpkgExecutable = Join-Path $vcpkgRoot "vcpkg.exe"
+          if (-not (
+            Test-Path -LiteralPath $vcpkgExecutable -PathType Leaf
+          )) {
+            throw "vcpkg initialization did not create $vcpkgExecutable"
+          }
+
+          $workDrive = (Split-Path -Qualifier $env:GITHUB_WORKSPACE).ToUpper()
+          $tempDrive = (Split-Path -Qualifier $env:TEMP).ToUpper()
+          if ($workDrive -ne $tempDrive -or $workDrive -ne $drive.ToUpper()) {
+            throw "Workspace, TEMP and vcpkg must use one drive: $workDrive, $tempDrive, $drive"
+          }
+
+          "VCPKG_ROOT=$vcpkgRoot" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VCPKG_BUILDTREES_ROOT=$buildtreesRoot" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "X_VCPKG_REGISTRIES_CACHE=$registriesRoot" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VCPKG_DOWNLOADS=$downloadsRoot" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $vcpkgRoot |
+            Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Restore Windows dependency cache
+        id: warm-vcpkg-cache
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: D:/vcpkg-binary-cache
+          key: >-
+            qgisplus-windows-vcpkg-${{
+            needs.versions.outputs.qgis_version }}-${{
+            hashFiles('upstream/QGIS/vcpkg/vcpkg.json',
+            'upstream/QGIS/vcpkg/triplets/x64-windows-release.cmake')
+            }}-${{ github.run_id }}-warmup-${{ github.run_attempt }}
+          restore-keys: |
+            qgisplus-windows-vcpkg-${{ needs.versions.outputs.qgis_version }}-${{ hashFiles('upstream/QGIS/vcpkg/vcpkg.json', 'upstream/QGIS/vcpkg/triplets/x64-windows-release.cmake') }}-
+            qgisplus-windows-vcpkg-${{ needs.versions.outputs.qgis_version }}-
+
+      - name: Install flex and bison
+        uses: robinraju/release-downloader@28fc21f50d76778e7023361aa1f863e717d3d56f
+        with:
+          repository: lexxmark/winflexbison
+          fileName: "*.zip"
+          tag: v2.5.24
+          extract: true
+
+      - name: Warm QGIS dependencies
+        id: warm-qgis-dependencies
+        continue-on-error: true
+        timeout-minutes: 330
+        shell: bash
+        env:
+          X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
+          VCPKG_BINARY_SOURCES: clear;files,D:/vcpkg-binary-cache,readwrite
+        run: bash scripts/configure_windows_qgis.sh
+
+      - name: Save Windows dependency cache
+        if: >-
+          always() &&
+          steps.warm-vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: D:/vcpkg-binary-cache
+          key: ${{ steps.warm-vcpkg-cache.outputs.cache-primary-key }}
+
+      - name: Verify dependency cache is resumable
+        if: always()
+        shell: pwsh
+        run: |
+          $archives = @(
+            Get-ChildItem `
+              -LiteralPath "$env:VCPKG_BINARY_CACHE_ROOT" `
+              -File `
+              -Recurse `
+              -ErrorAction SilentlyContinue
+          )
+          if ($archives.Count -eq 0) {
+            throw "Dependency warm-up produced no reusable vcpkg archives"
+          }
+          "Cached vcpkg archives: $($archives.Count)" |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
   windows_build:
     name: Build Windows x64 runtime
-    needs: versions
+    needs: [versions, windows_dependencies]
     runs-on: windows-2022
     timeout-minutes: 350
     env:
@@ -56,6 +211,18 @@ jobs:
       VCPKG_TRIPLET: x64-windows-release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Keep Python temporary files on the runner work drive
+        shell: pwsh
+        run: |
+          $tempRoot = $env:RUNNER_TEMP
+          New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
+          "TEMP=$tempRoot" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMP=$tempRoot" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMPDIR=$tempRoot" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
@@ -97,6 +264,7 @@ jobs:
             -Force `
             -Path `
               $buildtreesRoot, `
+              $env:TEMP, `
               $registriesRoot, `
               $downloadsRoot, `
               $binaryCacheRoot |
@@ -136,16 +304,12 @@ jobs:
           key: >-
             qgisplus-windows-vcpkg-${{
             needs.versions.outputs.qgis_version }}-${{
-            hashFiles('upstream/QGIS/vcpkg.json',
-            'upstream/QGIS/vcpkg-configuration.json',
+            hashFiles('upstream/QGIS/vcpkg/vcpkg.json',
             'upstream/QGIS/vcpkg/triplets/x64-windows-release.cmake')
-            }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: >-
-            qgisplus-windows-vcpkg-${{
-            needs.versions.outputs.qgis_version }}-${{
-            hashFiles('upstream/QGIS/vcpkg.json',
-            'upstream/QGIS/vcpkg-configuration.json',
-            'upstream/QGIS/vcpkg/triplets/x64-windows-release.cmake') }}-
+            }}-${{ github.run_id }}-build-${{ github.run_attempt }}
+          restore-keys: |
+            qgisplus-windows-vcpkg-${{ needs.versions.outputs.qgis_version }}-${{ hashFiles('upstream/QGIS/vcpkg/vcpkg.json', 'upstream/QGIS/vcpkg/triplets/x64-windows-release.cmake') }}-
+            qgisplus-windows-vcpkg-${{ needs.versions.outputs.qgis_version }}-
 
       - name: Install flex and bison
         uses: robinraju/release-downloader@28fc21f50d76778e7023361aa1f863e717d3d56f
@@ -156,49 +320,11 @@ jobs:
           extract: true
 
       - name: Configure QGIS and dependencies
-        id: configure-qgis
-        continue-on-error: true
-        timeout-minutes: 300
         shell: bash
         env:
           X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
           VCPKG_BINARY_SOURCES: clear;files,D:/vcpkg-binary-cache,readwrite
-        run: |
-          cmake -S "${QGIS_SOURCE}" -B "${QGIS_BUILD}" -G Ninja \
-            -D CMAKE_BUILD_TYPE=Release \
-            -D QGIS_APP_NAME="QGIS+" \
-            -D WITH_VCPKG=ON \
-            -D VCPKG_TARGET_TRIPLET="${VCPKG_TRIPLET}" \
-            -D VCPKG_HOST_TRIPLET="${VCPKG_TRIPLET}" \
-            -D WITH_DESKTOP=ON \
-            -D WITH_3D=ON \
-            -D WITH_BINDINGS=ON \
-            -D WITH_GEOGRAPHICLIB=OFF \
-            -D WITH_SFCGAL=ON \
-            -D ENABLE_TESTS=OFF \
-            -D WITH_QTWEBENGINE=OFF \
-            -D WITH_QSCIAPI=OFF \
-            -D ENABLE_UNITY_BUILDS=ON \
-            -D CMAKE_UNITY_BUILD_BATCH_SIZE=4 \
-            -D FLEX_EXECUTABLE="${GITHUB_WORKSPACE}/win_flex.exe" \
-            -D BISON_EXECUTABLE="${GITHUB_WORKSPACE}/win_bison.exe" \
-            -D VCPKG_INSTALL_OPTIONS="--x-buildtrees-root=${VCPKG_BUILDTREES_ROOT}"
-
-      - name: Save resumable vcpkg binary cache
-        if: >-
-          always() &&
-          steps.vcpkg-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
-        with:
-          path: D:/vcpkg-binary-cache
-          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
-
-      - name: Stop after dependency configuration failure
-        if: steps.configure-qgis.outcome != 'success'
-        shell: bash
-        run: |
-          echo "QGIS dependency configuration failed; completed vcpkg packages were cached." >&2
-          exit 1
+        run: bash scripts/configure_windows_qgis.sh
 
       - name: Build Qlementine style plugin with QGIS Qt
         shell: bash
