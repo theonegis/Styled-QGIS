@@ -63,6 +63,7 @@ fi
 
 mv "${vcpkg_download}" "${vcpkg_executable}"
 chmod +x "${vcpkg_executable}"
+export VCPKG_ROOT="${vcpkg_root}"
 "${vcpkg_executable}" bootstrap-standalone
 test -x "${vcpkg_executable}"
 

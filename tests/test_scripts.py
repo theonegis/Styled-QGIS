@@ -229,7 +229,16 @@ class WorkflowTests(unittest.TestCase):
             setup_script,
         )
         self.assertIn("--retry 3 --retry-all-errors", setup_script)
-        self.assertIn('"${vcpkg_executable}" bootstrap-standalone', setup_script)
+        export_root = 'export VCPKG_ROOT="${vcpkg_root}"'
+        standalone_bootstrap = (
+            '"${vcpkg_executable}" bootstrap-standalone'
+        )
+        self.assertIn(export_root, setup_script)
+        self.assertIn(standalone_bootstrap, setup_script)
+        self.assertLess(
+            setup_script.index(export_root),
+            setup_script.index(standalone_bootstrap),
+        )
         self.assertNotIn("bootstrap-vcpkg.sh", setup_script)
 
     def test_macos_dependency_configuration_is_resumable(self) -> None:
