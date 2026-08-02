@@ -639,25 +639,46 @@ jobs:
         env:
           X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
         run: |
-          cmake -S "${QGIS_SOURCE}" -B "${QGIS_BUILD}" -G Ninja \
-            -D QGIS_APP_NAME="QGIS+" \
-            -D WITH_VCPKG=ON \
-            -D WITH_QTWEBENGINE=OFF \
-            -D WITH_BINDINGS=ON \
-            -D WITH_ORACLE=ON \
-            -D WITH_GEOGRAPHICLIB=OFF \
-            -D WITH_SFCGAL=ON \
-            -D WITH_PROJ_DATA=ON \
-            -D WITH_QSCIAPI=OFF \
-            -D VCPKG_TARGET_TRIPLET="${{ matrix.triplet }}" \
-            -D VCPKG_HOST_TRIPLET="${{ matrix.triplet }}" \
-            -D CMAKE_OSX_DEPLOYMENT_TARGET="${{ matrix.deployment_target }}" \
-            -D CMAKE_OSX_ARCHITECTURES="${{ matrix.arch }}" \
-            -D ENABLE_UNITY_BUILDS=ON \
-            -D CMAKE_UNITY_BUILD_BATCH_SIZE=4 \
-            -D NUGET_USERNAME="${GITHUB_ACTOR}" \
-            -D NUGET_SOURCE="https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" \
-            -D NUGET_TOKEN="${{ secrets.GITHUB_TOKEN }}"
+          configure_qgis() {
+            cmake -S "${QGIS_SOURCE}" -B "${QGIS_BUILD}" -G Ninja \
+              -D QGIS_APP_NAME="QGIS+" \
+              -D CMAKE_BUILD_TYPE=Release \
+              -D WITH_VCPKG=ON \
+              -D WITH_QTWEBENGINE=OFF \
+              -D WITH_BINDINGS=ON \
+              -D WITH_ORACLE=ON \
+              -D WITH_GEOGRAPHICLIB=OFF \
+              -D WITH_SFCGAL=ON \
+              -D WITH_PROJ_DATA=ON \
+              -D WITH_QSCIAPI=OFF \
+              -D VCPKG_TARGET_TRIPLET="${{ matrix.triplet }}" \
+              -D VCPKG_HOST_TRIPLET="${{ matrix.triplet }}" \
+              -D CMAKE_OSX_DEPLOYMENT_TARGET="${{ matrix.deployment_target }}" \
+              -D CMAKE_OSX_ARCHITECTURES="${{ matrix.arch }}" \
+              -D ENABLE_UNITY_BUILDS=ON \
+              -D CMAKE_UNITY_BUILD_BATCH_SIZE=4 \
+              -D NUGET_USERNAME="${GITHUB_ACTOR}" \
+              -D NUGET_SOURCE="https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" \
+              -D NUGET_TOKEN="${{ secrets.GITHUB_TOKEN }}"
+          }
+
+          configured=false
+          for attempt in 1 2; do
+            if configure_qgis; then
+              configured=true
+              break
+            fi
+            if (( attempt == 2 )); then
+              break
+            fi
+            echo "::warning::QGIS dependency configuration failed; retrying from the resumable vcpkg state"
+            rm -f "${QGIS_BUILD}/CMakeCache.txt"
+            rm -rf "${QGIS_BUILD}/CMakeFiles"
+            sleep 10
+          done
+          if [[ "${configured}" != true ]]; then
+            exit 1
+          fi
 
       - name: Build Qlementine style plugin with QGIS Qt
         run: |
@@ -700,6 +721,63 @@ jobs:
               exit 1
             fi
           done
+
+          # 检查整个 bundle，而不只检查主程序。第三方库可以声明比 12.0
+          # 更低的最低版本，但任何要求 12.1+ 或更高版本的切片都会破坏
+          # Intel x64 / Apple Silicon 对 macOS 12 的支持。
+          MACHO_COUNT=0
+          while IFS= read -r -d '' binary; do
+            if [[ "$(file -b "${binary}")" != *Mach-O* ]]; then
+              continue
+            fi
+            ((MACHO_COUNT += 1))
+
+            ARCHS=" $(lipo -archs "${binary}") "
+            if [[ "${ARCHS}" != *" ${{ matrix.arch }} "* ]]; then
+              echo "Missing ${{ matrix.arch }} slice in ${binary}: ${ARCHS}" >&2
+              exit 1
+            fi
+
+            MINOS_COUNT=0
+            while IFS= read -r MIN_OS; do
+              [[ -n "${MIN_OS}" ]] || continue
+              ((MINOS_COUNT += 1))
+              if [[ ! "${MIN_OS}" =~ ^([0-9]+)\.([0-9]+)(\.[0-9]+)?$ ]]; then
+                echo "Unrecognized deployment target ${MIN_OS} in ${binary}" >&2
+                exit 1
+              fi
+              MIN_MAJOR="${BASH_REMATCH[1]}"
+              MIN_MINOR="${BASH_REMATCH[2]}"
+              if (( MIN_MAJOR > 12 || \
+                    (MIN_MAJOR == 12 && MIN_MINOR > 0) )); then
+                echo "macOS 12 incompatible binary ${binary}: minos ${MIN_OS}" >&2
+                exit 1
+              fi
+            done < <(otool -l "${binary}" | awk '
+              $1 == "cmd" {
+                deployment_command = (
+                  $2 == "LC_BUILD_VERSION" ||
+                  $2 == "LC_VERSION_MIN_MACOSX"
+                )
+                next
+              }
+              deployment_command && ($1 == "minos" || $1 == "version") {
+                print $2
+                deployment_command = 0
+              }
+            ')
+
+            if (( MINOS_COUNT == 0 )); then
+              echo "Missing macOS deployment target in ${binary}" >&2
+              exit 1
+            fi
+          done < <(find "${APP_PATH}" -type f -print0)
+          if (( MACHO_COUNT == 0 )); then
+            echo "No Mach-O files found in ${APP_PATH}" >&2
+            exit 1
+          fi
+          echo "Verified ${MACHO_COUNT} Mach-O files for ${{ matrix.arch }} on macOS 12."
+
           QT_QPA_PLATFORM=offscreen \
             "${APP_PATH}/Contents/MacOS/QGIS+" --version
 

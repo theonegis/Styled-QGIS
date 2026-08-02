@@ -222,8 +222,29 @@ class WorkflowTests(unittest.TestCase):
             '["default-registry"]["baseline"]',
             setup_script,
         )
-        self.assertIn("for attempt in 1 2 3", setup_script)
-        self.assertIn('bootstrap-vcpkg.sh" -disableMetrics', setup_script)
+        self.assertIn('vcpkg_tool_version="2026-07-27"', setup_script)
+        self.assertIn(
+            'vcpkg_tool_sha256="352a52151f57e51b0298bdd6f6a825cd'
+            '4413d3b88d258f456193daf783b3ceec"',
+            setup_script,
+        )
+        self.assertIn("--retry 3 --retry-all-errors", setup_script)
+        self.assertIn('"${vcpkg_executable}" bootstrap-standalone', setup_script)
+        self.assertNotIn("bootstrap-vcpkg.sh", setup_script)
+
+    def test_macos_dependency_configuration_is_resumable(self) -> None:
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github/workflows/build.yml"
+        ).read_text(encoding="utf-8")
+        macos_job = workflow.split("  macos:", 1)[1].split(
+            "  release:", 1
+        )[0]
+
+        self.assertIn("for attempt in 1 2", macos_job)
+        self.assertIn("retrying from the resumable vcpkg state", macos_job)
+        self.assertIn('rm -f "${QGIS_BUILD}/CMakeCache.txt"', macos_job)
+        self.assertIn('rm -rf "${QGIS_BUILD}/CMakeFiles"', macos_job)
 
     def test_macos_requires_monterey_and_validates_dependency_patches(
         self,
@@ -236,16 +257,34 @@ class WorkflowTests(unittest.TestCase):
             "  release:", 1
         )[0]
 
+        self.assertIn(
+            "- name: Intel\n"
+            "            os: macos-15-intel\n"
+            "            arch: x86_64\n"
+            "            triplet: x64-osx-dynamic-release\n"
+            '            deployment_target: "12.0"',
+            macos_job,
+        )
         self.assertEqual(macos_job.count('deployment_target: "12.0"'), 2)
         self.assertNotIn('deployment_target: "10.15"', macos_job)
         self.assertNotIn('deployment_target: "11.0"', macos_job)
         self.assertIn("Validate macOS dependency patches", macos_job)
+        self.assertEqual(macos_job.count("-D CMAKE_BUILD_TYPE=Release"), 2)
         self.assertIn(
             "set(VCPKG_OSX_DEPLOYMENT_TARGET 12.0)", macos_job
         )
         self.assertIn(SIP_OVERLAY_MARKER, macos_job)
         self.assertIn('xcrun vtool -show-build "${binary}"', macos_job)
         self.assertIn('if [[ "${MIN_OS}" != "12.0" ]]', macos_job)
+        self.assertIn('find "${APP_PATH}" -type f -print0', macos_job)
+        self.assertIn('file -b "${binary}"', macos_job)
+        self.assertIn('lipo -archs "${binary}"', macos_job)
+        self.assertIn('Missing ${{ matrix.arch }} slice', macos_job)
+        self.assertIn('otool -l "${binary}"', macos_job)
+        self.assertIn('LC_VERSION_MIN_MACOSX', macos_job)
+        self.assertIn("MIN_MAJOR > 12", macos_job)
+        self.assertIn("macOS 12 incompatible binary", macos_job)
+        self.assertIn("MACHO_COUNT == 0", macos_job)
 
 
 class VersionResolverTests(unittest.TestCase):
