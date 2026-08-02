@@ -552,9 +552,103 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+  macos_dependencies:
+    name: Warm macOS ${{ matrix.name }} dependencies
+    needs: versions
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Intel
+            os: macos-15-intel
+            arch: x86_64
+            triplet: x64-osx-dynamic-release
+            deployment_target: "12.0"
+          - name: Apple-Silicon
+            os: macos-15
+            arch: arm64
+            triplet: arm64-osx-dynamic-release
+            deployment_target: "12.0"
+    env:
+      QGIS_SOURCE: ${{ github.workspace }}/upstream/QGIS
+      QGIS_BUILD: ${{ github.workspace }}/upstream/QGIS/build
+      FC: gfortran
+      GCC_VERSION: "15"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+
+      - name: Prepare patched upstream sources
+        run: >-
+          python scripts/prepare_source.py
+          --output upstream
+          --qgis-tag "${{ needs.versions.outputs.qgis_tag }}"
+          --qlementine-tag "${{ needs.versions.outputs.qlementine_tag }}"
+
+      - name: Install build tools
+        run: |
+          brew untap aws/tap || true
+          brew install automake bison flex gnu-sed autoconf-archive \
+            nasm libtool fdupes swig mono
+          echo "$(brew --prefix bison)/bin" >> "${GITHUB_PATH}"
+          echo "$(brew --prefix flex)/bin" >> "${GITHUB_PATH}"
+          echo "$(brew --prefix libtool)/bin" >> "${GITHUB_PATH}"
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@f5b8fbb4d77cec1acc5a5f9f0df4beffaf5d98d9
+        with:
+          cmakeVersion: 3.30.4
+
+      - name: Set up pinned QGIS vcpkg
+        run: bash scripts/setup_macos_vcpkg.sh
+
+      - name: Configure gfortran
+        run: |
+          if [[ "${{ matrix.arch }}" == "arm64" ]]; then
+            sudo ln -fs "/opt/homebrew/bin/gfortran-${GCC_VERSION}" /usr/local/bin/gfortran
+            GCC_PREFIX=/opt/homebrew
+          else
+            sudo ln -fs "/usr/local/bin/gfortran-${GCC_VERSION}" /usr/local/bin/gfortran
+            GCC_PREFIX=/usr/local
+          fi
+          sudo mkdir -p /usr/local/gfortran
+          sudo ln -sf "${GCC_PREFIX}"/Cellar/gcc@${GCC_VERSION}/*/lib/gcc/${GCC_VERSION} \
+            /usr/local/gfortran/lib
+
+      # A cold Intel dependency graph cannot finish within GitHub's six-hour
+      # hosted-runner limit. Completed ports are uploaded to the repository's
+      # NuGet binary cache as they finish; the build job resumes from them.
+      - name: Seed resumable macOS dependency cache
+        id: seed
+        continue-on-error: true
+        timeout-minutes: 330
+        env:
+          X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
+          VCPKG_TARGET_TRIPLET: ${{ matrix.triplet }}
+          QGISPLUS_MACOS_ARCH: ${{ matrix.arch }}
+          QGISPLUS_MACOS_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
+          NUGET_USERNAME: ${{ github.actor }}
+          NUGET_SOURCE: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+          NUGET_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/configure_macos_qgis.sh
+
+      - name: Summarize dependency cache seed
+        if: always()
+        run: |
+          if [[ "${{ steps.seed.outcome }}" == "success" ]]; then
+            echo "All ${{ matrix.arch }} dependencies are available in the binary cache."
+          else
+            echo "::notice::The warm pass reached its bound; the macOS build will resume from uploaded packages."
+          fi
+
   macos:
     name: macOS ${{ matrix.name }}
-    needs: versions
+    needs: [versions, macos_dependencies]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 360
     strategy:
@@ -638,28 +732,15 @@ jobs:
       - name: Configure QGIS and dependencies
         env:
           X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
+          VCPKG_TARGET_TRIPLET: ${{ matrix.triplet }}
+          QGISPLUS_MACOS_ARCH: ${{ matrix.arch }}
+          QGISPLUS_MACOS_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
+          NUGET_USERNAME: ${{ github.actor }}
+          NUGET_SOURCE: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+          NUGET_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           configure_qgis() {
-            cmake -S "${QGIS_SOURCE}" -B "${QGIS_BUILD}" -G Ninja \
-              -D QGIS_APP_NAME="QGIS+" \
-              -D CMAKE_BUILD_TYPE=Release \
-              -D WITH_VCPKG=ON \
-              -D WITH_QTWEBENGINE=OFF \
-              -D WITH_BINDINGS=ON \
-              -D WITH_ORACLE=ON \
-              -D WITH_GEOGRAPHICLIB=OFF \
-              -D WITH_SFCGAL=ON \
-              -D WITH_PROJ_DATA=ON \
-              -D WITH_QSCIAPI=OFF \
-              -D VCPKG_TARGET_TRIPLET="${{ matrix.triplet }}" \
-              -D VCPKG_HOST_TRIPLET="${{ matrix.triplet }}" \
-              -D CMAKE_OSX_DEPLOYMENT_TARGET="${{ matrix.deployment_target }}" \
-              -D CMAKE_OSX_ARCHITECTURES="${{ matrix.arch }}" \
-              -D ENABLE_UNITY_BUILDS=ON \
-              -D CMAKE_UNITY_BUILD_BATCH_SIZE=4 \
-              -D NUGET_USERNAME="${GITHUB_ACTOR}" \
-              -D NUGET_SOURCE="https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" \
-              -D NUGET_TOKEN="${{ secrets.GITHUB_TOKEN }}"
+            bash scripts/configure_macos_qgis.sh
           }
 
           configured=false
@@ -706,80 +787,22 @@ jobs:
         run: |
           APP_PATH="$(find "${QGIS_BUILD}/_CPack_Packages/Darwin/External" \
             -type d -name 'QGIS+.app' -print -quit)"
-          test -n "${APP_PATH}"
-          test -x "${APP_PATH}/Contents/MacOS/QGIS+"
-          STYLE_PLUGIN="$(find "${APP_PATH}/Contents/PlugIns/styles" \
-            -maxdepth 1 -type f -iname '*qgisplusstyle*' -print -quit)"
-          test -n "${STYLE_PLUGIN}"
-          for binary in \
-            "${APP_PATH}/Contents/MacOS/QGIS+" \
-            "${STYLE_PLUGIN}"; do
-            MIN_OS="$(xcrun vtool -show-build "${binary}" | \
-              awk '$1 == "minos" { print $2; exit }')"
-            if [[ "${MIN_OS}" != "12.0" ]]; then
-              echo "Unexpected deployment target ${MIN_OS} in ${binary}" >&2
-              exit 1
-            fi
-          done
+          mkdir -p dist
+          set -o pipefail
+          bash scripts/verify_macos_bundle.sh \
+            "${APP_PATH}" \
+            "${{ matrix.arch }}" \
+            "${{ matrix.deployment_target }}" 2>&1 | \
+            tee "dist/macos-verification-${{ matrix.artifact_arch }}.log"
 
-          # 检查整个 bundle，而不只检查主程序。第三方库可以声明比 12.0
-          # 更低的最低版本，但任何要求 12.1+ 或更高版本的切片都会破坏
-          # Intel x64 / Apple Silicon 对 macOS 12 的支持。
-          MACHO_COUNT=0
-          while IFS= read -r -d '' binary; do
-            if [[ "$(file -b "${binary}")" != *Mach-O* ]]; then
-              continue
-            fi
-            ((MACHO_COUNT += 1))
-
-            ARCHS=" $(lipo -archs "${binary}") "
-            if [[ "${ARCHS}" != *" ${{ matrix.arch }} "* ]]; then
-              echo "Missing ${{ matrix.arch }} slice in ${binary}: ${ARCHS}" >&2
-              exit 1
-            fi
-
-            MINOS_COUNT=0
-            while IFS= read -r MIN_OS; do
-              [[ -n "${MIN_OS}" ]] || continue
-              ((MINOS_COUNT += 1))
-              if [[ ! "${MIN_OS}" =~ ^([0-9]+)\.([0-9]+)(\.[0-9]+)?$ ]]; then
-                echo "Unrecognized deployment target ${MIN_OS} in ${binary}" >&2
-                exit 1
-              fi
-              MIN_MAJOR="${BASH_REMATCH[1]}"
-              MIN_MINOR="${BASH_REMATCH[2]}"
-              if (( MIN_MAJOR > 12 || \
-                    (MIN_MAJOR == 12 && MIN_MINOR > 0) )); then
-                echo "macOS 12 incompatible binary ${binary}: minos ${MIN_OS}" >&2
-                exit 1
-              fi
-            done < <(otool -l "${binary}" | awk '
-              $1 == "cmd" {
-                deployment_command = (
-                  $2 == "LC_BUILD_VERSION" ||
-                  $2 == "LC_VERSION_MIN_MACOSX"
-                )
-                next
-              }
-              deployment_command && ($1 == "minos" || $1 == "version") {
-                print $2
-                deployment_command = 0
-              }
-            ')
-
-            if (( MINOS_COUNT == 0 )); then
-              echo "Missing macOS deployment target in ${binary}" >&2
-              exit 1
-            fi
-          done < <(find "${APP_PATH}" -type f -print0)
-          if (( MACHO_COUNT == 0 )); then
-            echo "No Mach-O files found in ${APP_PATH}" >&2
-            exit 1
-          fi
-          echo "Verified ${MACHO_COUNT} Mach-O files for ${{ matrix.arch }} on macOS 12."
-
-          QT_QPA_PLATFORM=offscreen \
-            "${APP_PATH}/Contents/MacOS/QGIS+" --version
+      - name: Upload macOS verification diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: QGISPlus-macOS-diagnostics-${{ matrix.artifact_arch }}
+          path: dist/macos-verification-${{ matrix.artifact_arch }}.log
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Create architecture-specific DMG
         run: |

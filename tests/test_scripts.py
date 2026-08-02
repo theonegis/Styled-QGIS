@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -60,9 +61,14 @@ class WorkflowTests(unittest.TestCase):
             Path(__file__).resolve().parents[1]
             / "scripts/configure_windows_qgis.sh"
         ).read_text(encoding="utf-8")
+        macos_configure = (
+            Path(__file__).resolve().parents[1]
+            / "scripts/configure_macos_qgis.sh"
+        ).read_text(encoding="utf-8")
         self.assertGreaterEqual(
             workflow.count("-D WITH_QSCIAPI=OFF")
-            + windows_configure.count("-D WITH_QSCIAPI=OFF"),
+            + windows_configure.count("-D WITH_QSCIAPI=OFF")
+            + macos_configure.count("-D WITH_QSCIAPI=OFF"),
             2,
         )
         self.assertIn("windows_dependencies:", workflow)
@@ -189,22 +195,31 @@ class WorkflowTests(unittest.TestCase):
         )
 
     def test_macos_cache_is_owned_by_the_current_repository(self) -> None:
+        root = Path(__file__).resolve().parents[1]
         workflow = (
-            Path(__file__).resolve().parents[1]
-            / ".github/workflows/build.yml"
+            root / ".github/workflows/build.yml"
         ).read_text(encoding="utf-8")
         macos_job = workflow.split("  macos:", 1)[1].split(
             "  release:", 1
         )[0]
+        macos_jobs = workflow.split("  macos_dependencies:", 1)[1].split(
+            "  release:", 1
+        )[0]
+        configure_script = (
+            root / "scripts/configure_macos_qgis.sh"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("packages: write", workflow)
         self.assertIn(
             "https://nuget.pkg.github.com/"
             "${{ github.repository_owner }}/index.json",
-            macos_job,
+            macos_jobs,
         )
-        self.assertIn('-D NUGET_USERNAME="${GITHUB_ACTOR}"', macos_job)
-        self.assertNotIn("nuget.pkg.github.com/qgis", macos_job)
+        self.assertIn(
+            '-D NUGET_USERNAME="${NUGET_USERNAME}"', configure_script
+        )
+        self.assertIn('-D NUGET_SOURCE="${NUGET_SOURCE}"', configure_script)
+        self.assertNotIn("nuget.pkg.github.com/qgis", macos_jobs)
         self.assertIn(
             "run: bash scripts/setup_macos_vcpkg.sh", macos_job
         )
@@ -246,10 +261,23 @@ class WorkflowTests(unittest.TestCase):
             Path(__file__).resolve().parents[1]
             / ".github/workflows/build.yml"
         ).read_text(encoding="utf-8")
+        dependency_job = workflow.split(
+            "  macos_dependencies:", 1
+        )[1].split("  macos:", 1)[0]
         macos_job = workflow.split("  macos:", 1)[1].split(
             "  release:", 1
         )[0]
 
+        self.assertIn("needs: [versions, macos_dependencies]", macos_job)
+        self.assertIn(
+            "Seed resumable macOS dependency cache", dependency_job
+        )
+        self.assertIn("continue-on-error: true", dependency_job)
+        self.assertIn("timeout-minutes: 330", dependency_job)
+        self.assertIn(
+            "the macOS build will resume from uploaded packages",
+            dependency_job,
+        )
         self.assertIn("for attempt in 1 2", macos_job)
         self.assertIn("retrying from the resumable vcpkg state", macos_job)
         self.assertIn('rm -f "${QGIS_BUILD}/CMakeCache.txt"', macos_job)
@@ -258,13 +286,19 @@ class WorkflowTests(unittest.TestCase):
     def test_macos_requires_monterey_and_validates_dependency_patches(
         self,
     ) -> None:
+        root = Path(__file__).resolve().parents[1]
         workflow = (
-            Path(__file__).resolve().parents[1]
-            / ".github/workflows/build.yml"
+            root / ".github/workflows/build.yml"
         ).read_text(encoding="utf-8")
         macos_job = workflow.split("  macos:", 1)[1].split(
             "  release:", 1
         )[0]
+        configure_script = (
+            root / "scripts/configure_macos_qgis.sh"
+        ).read_text(encoding="utf-8")
+        verification_script = (
+            root / "scripts/verify_macos_bundle.sh"
+        ).read_text(encoding="utf-8")
 
         self.assertIn(
             "- name: Intel\n"
@@ -278,22 +312,99 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('deployment_target: "10.15"', macos_job)
         self.assertNotIn('deployment_target: "11.0"', macos_job)
         self.assertIn("Validate macOS dependency patches", macos_job)
-        self.assertEqual(macos_job.count("-D CMAKE_BUILD_TYPE=Release"), 2)
+        self.assertIn("-D CMAKE_BUILD_TYPE=Release", configure_script)
+        self.assertIn("-D CMAKE_BUILD_TYPE=Release", macos_job)
         self.assertIn(
             "set(VCPKG_OSX_DEPLOYMENT_TARGET 12.0)", macos_job
         )
         self.assertIn(SIP_OVERLAY_MARKER, macos_job)
-        self.assertIn('xcrun vtool -show-build "${binary}"', macos_job)
-        self.assertIn('if [[ "${MIN_OS}" != "12.0" ]]', macos_job)
-        self.assertIn('find "${APP_PATH}" -type f -print0', macos_job)
-        self.assertIn('file -b "${binary}"', macos_job)
-        self.assertIn('lipo -archs "${binary}"', macos_job)
-        self.assertIn('Missing ${{ matrix.arch }} slice', macos_job)
-        self.assertIn('otool -l "${binary}"', macos_job)
-        self.assertIn('LC_VERSION_MIN_MACOSX', macos_job)
-        self.assertIn("MIN_MAJOR > 12", macos_job)
-        self.assertIn("macOS 12 incompatible binary", macos_job)
-        self.assertIn("MACHO_COUNT == 0", macos_job)
+        self.assertIn(
+            "bash scripts/verify_macos_bundle.sh", macos_job
+        )
+        self.assertIn("Upload macOS verification diagnostics", macos_job)
+        self.assertIn("if: always()", macos_job)
+        self.assertIn(
+            'xcrun vtool -show-build "${binary}"', verification_script
+        )
+        self.assertIn(
+            'find "${app_path}" -type f -print0', verification_script
+        )
+        self.assertIn('file -b "${binary}"', verification_script)
+        self.assertIn('lipo -archs "${binary}"', verification_script)
+        self.assertIn('otool -l "${binary}"', verification_script)
+        self.assertIn("LC_VERSION_MIN_MACOSX", verification_script)
+        self.assertIn("min_major > max_major", verification_script)
+        self.assertIn("macho_count == 0", verification_script)
+        self.assertNotIn("deployment_command = (\n", verification_script)
+
+        syntax_check = subprocess.run(
+            ["bash", "-n", str(root / "scripts/verify_macos_bundle.sh")],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(syntax_check.returncode, 0, syntax_check.stderr)
+
+    def test_macos_bundle_verifier_accepts_a_valid_bundle(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        verifier = root / "scripts/verify_macos_bundle.sh"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            app = temp / "QGIS+.app"
+            main_binary = app / "Contents/MacOS/QGIS+"
+            style_plugin = (
+                app / "Contents/PlugIns/styles/libqgisplusstyle.dylib"
+            )
+            tools = temp / "bin"
+            main_binary.parent.mkdir(parents=True)
+            style_plugin.parent.mkdir(parents=True)
+            tools.mkdir()
+
+            main_binary.write_text(
+                "#!/usr/bin/env bash\necho 'QGIS 4.2.1'\n",
+                encoding="utf-8",
+            )
+            main_binary.chmod(0o755)
+            style_plugin.write_text("plugin", encoding="utf-8")
+
+            mock_tools = {
+                "file": "#!/usr/bin/env bash\necho 'Mach-O 64-bit'\n",
+                "lipo": "#!/usr/bin/env bash\necho 'arm64'\n",
+                "xcrun": (
+                    "#!/usr/bin/env bash\n"
+                    "printf '      minos 12.0\\n'\n"
+                ),
+                "otool": (
+                    "#!/usr/bin/env bash\n"
+                    "cat <<'EOF'\n"
+                    "Load command 1\n"
+                    "      cmd LC_BUILD_VERSION\n"
+                    "  cmdsize 32\n"
+                    " platform 1\n"
+                    "    minos 12.0\n"
+                    "      sdk 15.0\n"
+                    "EOF\n"
+                ),
+            }
+            for name, content in mock_tools.items():
+                path = tools / name
+                path.write_text(content, encoding="utf-8")
+                path.chmod(0o755)
+
+            env = os.environ.copy()
+            env["PATH"] = f"{tools}{os.pathsep}{env['PATH']}"
+            result = subprocess.run(
+                ["bash", str(verifier), str(app), "arm64", "12.0"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Inspected 2 Mach-O files", result.stdout)
+        self.assertIn("macOS bundle verification passed", result.stdout)
 
 
 class VersionResolverTests(unittest.TestCase):
