@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
@@ -12,7 +15,15 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from apply_qgis_patch import patch_cmake, patch_main, patch_windows_triplet
+from apply_qgis_patch import (
+    MACOS_DEPLOYMENT_TARGET,
+    SIP_OVERLAY_MARKER,
+    patch_cmake,
+    patch_macos_triplets,
+    patch_main,
+    patch_sip_overlay_port,
+    patch_windows_triplet,
+)
 from prepare_ifw_package import PACKAGE_ID, prepare_ifw_package
 from resolve_versions import (
     QGIS_RELEASE_RE,
@@ -194,6 +205,47 @@ class WorkflowTests(unittest.TestCase):
         )
         self.assertIn('-D NUGET_USERNAME="${GITHUB_ACTOR}"', macos_job)
         self.assertNotIn("nuget.pkg.github.com/qgis", macos_job)
+        self.assertIn(
+            "run: bash scripts/setup_macos_vcpkg.sh", macos_job
+        )
+        self.assertNotIn(
+            "uses: ./upstream/QGIS/.github/actions/setup-vcpkg",
+            macos_job,
+        )
+
+        setup_script = (
+            Path(__file__).resolve().parents[1]
+            / "scripts/setup_macos_vcpkg.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'manifest["vcpkg-configuration"]'
+            '["default-registry"]["baseline"]',
+            setup_script,
+        )
+        self.assertIn("for attempt in 1 2 3", setup_script)
+        self.assertIn('bootstrap-vcpkg.sh" -disableMetrics', setup_script)
+
+    def test_macos_requires_monterey_and_validates_dependency_patches(
+        self,
+    ) -> None:
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github/workflows/build.yml"
+        ).read_text(encoding="utf-8")
+        macos_job = workflow.split("  macos:", 1)[1].split(
+            "  release:", 1
+        )[0]
+
+        self.assertEqual(macos_job.count('deployment_target: "12.0"'), 2)
+        self.assertNotIn('deployment_target: "10.15"', macos_job)
+        self.assertNotIn('deployment_target: "11.0"', macos_job)
+        self.assertIn("Validate macOS dependency patches", macos_job)
+        self.assertIn(
+            "set(VCPKG_OSX_DEPLOYMENT_TARGET 12.0)", macos_job
+        )
+        self.assertIn(SIP_OVERLAY_MARKER, macos_job)
+        self.assertIn('xcrun vtool -show-build "${binary}"', macos_job)
+        self.assertIn('if [[ "${MIN_OS}" != "12.0" ]]', macos_job)
 
 
 class VersionResolverTests(unittest.TestCase):
@@ -252,6 +304,49 @@ class VersionResolverTests(unittest.TestCase):
 
 
 class PatchTests(unittest.TestCase):
+    @staticmethod
+    def _write_vcpkg_manifest(root: Path, baseline: str) -> None:
+        vcpkg_dir = root / "vcpkg"
+        vcpkg_dir.mkdir(parents=True, exist_ok=True)
+        (vcpkg_dir / "vcpkg.json").write_text(
+            json.dumps(
+                {
+                    "vcpkg-configuration": {
+                        "registries": [
+                            {
+                                "kind": "git",
+                                "baseline": baseline,
+                                "repository": (
+                                    "https://github.com/"
+                                    "open-vcpkg/python-registry"
+                                ),
+                                "packages": ["py-*"],
+                            }
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _write_macos_triplets(root: Path) -> tuple[Path, Path]:
+        triplet_dir = root / "vcpkg/triplets"
+        triplet_dir.mkdir(parents=True, exist_ok=True)
+        intel = triplet_dir / "x64-osx-dynamic-release.cmake"
+        arm = triplet_dir / "arm64-osx-dynamic-release.cmake"
+        intel.write_text(
+            "set(VCPKG_TARGET_ARCHITECTURE x64)\n"
+            "set(VCPKG_OSX_DEPLOYMENT_TARGET 10.15)\n",
+            encoding="utf-8",
+        )
+        arm.write_text(
+            "set(VCPKG_TARGET_ARCHITECTURE arm64)\n"
+            "set(VCPKG_OSX_DEPLOYMENT_TARGET 11.0)\n",
+            encoding="utf-8",
+        )
+        return intel, arm
+
     def test_patch_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -306,6 +401,138 @@ class PatchTests(unittest.TestCase):
             self.assertIn(
                 '"${_qgisplus_llvm_prefix}/x64/bin"', first_triplet
             )
+
+    def test_macos_triplets_and_sip_overlay_are_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            intel, arm = self._write_macos_triplets(root)
+            self._write_vcpkg_manifest(
+                root, "efa37f71edf9c676686040ffc4b7edaf2327e4d0"
+            )
+
+            patch_macos_triplets(root)
+            patch_sip_overlay_port(root)
+            first_intel = intel.read_text(encoding="utf-8")
+            first_arm = arm.read_text(encoding="utf-8")
+            portfile = root / "vcpkg/ports/py-sip/portfile.cmake"
+            first_portfile = portfile.read_text(encoding="utf-8")
+
+            patch_macos_triplets(root)
+            patch_sip_overlay_port(root)
+            self.assertEqual(first_intel, intel.read_text(encoding="utf-8"))
+            self.assertEqual(first_arm, arm.read_text(encoding="utf-8"))
+            self.assertEqual(
+                first_portfile, portfile.read_text(encoding="utf-8")
+            )
+            self.assertIn(
+                f"set(VCPKG_OSX_DEPLOYMENT_TARGET "
+                f"{MACOS_DEPLOYMENT_TARGET})",
+                first_intel,
+            )
+            self.assertIn(
+                f"set(VCPKG_OSX_DEPLOYMENT_TARGET "
+                f"{MACOS_DEPLOYMENT_TARGET})",
+                first_arm,
+            )
+            self.assertIn(SIP_OVERLAY_MARKER, first_portfile)
+            self.assertIn(
+                'exec "$(dirname "$0")/../tools/python3/python3" '
+                '-m @MODULE@ "$@"',
+                first_portfile,
+            )
+            self.assertIn(
+                'qgisplus_fixup_sip_entry_point('
+                '"sip-distinfo" "sipbuild.tools.distinfo")',
+                first_portfile,
+            )
+
+    def test_existing_upstream_sip_overlay_is_not_overwritten(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            port_dir = root / "vcpkg/ports/py-sip"
+            port_dir.mkdir(parents=True)
+            portfile = port_dir / "portfile.cmake"
+            portfile.write_text("upstream port\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "review it"):
+                patch_sip_overlay_port(root)
+            self.assertEqual(
+                portfile.read_text(encoding="utf-8"), "upstream port\n"
+            )
+
+    def test_generated_sip_overlay_executes_with_cmake(self) -> None:
+        cmake = shutil.which("cmake")
+        if cmake is None:
+            self.skipTest("CMake is not installed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_vcpkg_manifest(
+                root, "efa37f71edf9c676686040ffc4b7edaf2327e4d0"
+            )
+            patch_sip_overlay_port(root)
+            package_dir = root / "package"
+            portfile = root / "vcpkg/ports/py-sip/portfile.cmake"
+            driver = root / "validate-sip-port.cmake"
+            driver.write_text(
+                f'''set(VERSION 6.15.3)
+set(CURRENT_PACKAGES_DIR "{package_dir.as_posix()}")
+set(SOURCE_PATH "{(root / "source").as_posix()}")
+set(python_versioned python3.12)
+set(VCPKG_TARGET_IS_WINDOWS FALSE)
+
+function(vcpkg_from_pythonhosted)
+  set(SOURCE_PATH "{(root / "source").as_posix()}" PARENT_SCOPE)
+endfunction()
+
+function(vcpkg_python_build_and_install_wheel)
+  file(MAKE_DIRECTORY "${{CURRENT_PACKAGES_DIR}}/bin")
+  foreach(script sip-build sip-distinfo sip-install sip-module sip-sdist sip-wheel)
+    file(WRITE "${{CURRENT_PACKAGES_DIR}}/bin/${{script}}" "#!/bin/sh\\n")
+  endforeach()
+endfunction()
+
+function(vcpkg_install_copyright)
+endfunction()
+
+function(vcpkg_fixup_shebang)
+  message(FATAL_ERROR "Windows helper must not run on macOS")
+endfunction()
+
+include("{portfile.as_posix()}")
+''',
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [cmake, "-P", str(driver)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                result.returncode,
+                0,
+                msg=f"{result.stdout}\n{result.stderr}",
+            )
+            wrapper = (package_dir / "bin/sip-distinfo").read_text(
+                encoding="utf-8"
+            )
+            self.assertEqual(
+                wrapper,
+                '#!/bin/sh\n'
+                'exec "$(dirname "$0")/../tools/python3/python3" '
+                '-m sipbuild.tools.distinfo "$@"\n',
+            )
+
+    def test_changed_python_registry_requires_overlay_review(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_vcpkg_manifest(root, "0" * 40)
+
+            with self.assertRaisesRegex(RuntimeError, "Python registry changed"):
+                patch_sip_overlay_port(root)
+            self.assertFalse((root / "vcpkg/ports/py-sip").exists())
 
     def test_old_windows_triplet_patch_is_migrated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

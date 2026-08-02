@@ -12,8 +12,8 @@ Qt `QStylePlugin`，并在没有用户自定义 Style 时将其设为 QGIS 的�
 
 GitHub Actions 默认构建：
 
-- macOS Intel（x86_64）DMG；
-- macOS Apple Silicon（arm64）DMG；
+- macOS Intel（x86_64）DMG，最低支持 macOS Monterey 12；
+- macOS Apple Silicon（arm64）DMG，最低支持 macOS Monterey 12；
 - Windows x64 Qt Installer Framework 离线安装包（`.exe`）。
 
 Linux 不构建 Qlementine 版本。Linux 用户可直接使用发行版提供的 QGIS，
@@ -81,7 +81,8 @@ python3 scripts/prepare_source.py --output upstream
 
 1. 浅克隆选中的 QGIS Release；
 2. 浅克隆选中的 Qlementine Release；
-3. 对 QGIS 应用三处带锚点校验的幂等修改；
+3. 对 QGIS 应用带锚点校验的幂等修改，包括默认 Style、安装目录、
+   macOS 12 triplet、SIP 启动脚本和 Windows Fortran 配置；
 4. 写出 `upstream/versions.json`，便于审计和复现。
 
 如果未来 QGIS 修改了相关初始化代码，补丁会明确失败，而不会模糊匹配后
@@ -175,6 +176,24 @@ macOS 的 vcpkg 二进制包使用当前仓库所有者名下的 GitHub Packages
 源读写。这样既能在后续构建中复用依赖，也不会错误地尝试向 QGIS 官方组织的
 包源写入并触发权限错误。
 
+macOS 不再调用会跟随 `latest` 漂移的上游 `vcpkg-init.sh`，而是从所选 QGIS
+Release 的 `vcpkg.json` 读取 40 位 baseline，检出并启动同一提交的 vcpkg。
+下载带三次有限重试；工具版本、端口版本和 ABI 哈希因此可以随标签复现。
+
+Intel 与 Apple Silicon 均把 QGIS 顶层构建和 vcpkg triplet 的最低部署版本
+固定为 macOS Monterey 12。只设置 `CMAKE_OSX_DEPLOYMENT_TARGET` 不足以覆盖
+QGIS triplet 自带的 10.15/11.0 值，因此源码准备阶段会同时修改两个 triplet，
+并在耗时构建开始前进行校验。
+
+QGIS 4.2.1 所用 Python registry 的 SIP shebang 修复不是幂等的：对已经使用
+`/bin/sh` 的包装器再次处理后，会生成指向工作目录之外的相对路径，最终让
+PyQt6 在 `sip-distinfo` 阶段失败。工程通过窄范围 `py-sip` overlay port 在
+macOS/Linux 写入相对 `tools/python3` 的可迁移模块包装器；Windows 继续使用
+已经验证成功的上游实现。overlay 内容会参与 vcpkg ABI 哈希，因此旧缓存中的
+错误 SIP 包不会被复用。
+overlay 只对当前已审查的 Python registry baseline 生效；未来 QGIS 更新该
+baseline 时，快速检查会要求重新核对 `py-sip`，不会静默固定到旧依赖。
+
 macOS 显式关闭上游用于开发阶段生成 QScintilla API/PAP 文件的
 `WITH_QSCIAPI`。这不会关闭 Python、PyQGIS 或 Processing，可避免 vcpkg
 Python 在生成 PAP 时同时加载多个 Qt6Core 兼容名导致的构建期崩溃。
@@ -190,6 +209,7 @@ Python 在生成 PAP 时同时加载多个 Qt6Core 兼容名导致的构建期�
 │   ├── prepare_source.py           # 拉取上游并生成可构建源码
 │   ├── apply_qgis_patch.py         # 幂等、锚点校验的 QGIS 补丁
 │   ├── configure_windows_qgis.sh    # Windows 两阶段共用的 QGIS 配置参数
+│   ├── setup_macos_vcpkg.sh         # 按 QGIS baseline 固定 macOS vcpkg
 │   └── prepare_ifw_package.py      # 生成并校验 Windows QtIFW 元数据
 ├── packaging/ifw/                  # Windows 安装器组件脚本
 ├── tests/                          # 版本选择、补丁和插件发现测试

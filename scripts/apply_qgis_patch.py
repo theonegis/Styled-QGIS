@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import re
 import sys
 from pathlib import Path
 
@@ -12,6 +14,10 @@ MAIN_MARKER = "// QGIS+ default style"
 CMAKE_MARKER = "# QGIS+ style plugin"
 WINDOWS_TRIPLET_MARKER = "# QGIS+ hosted-runner Fortran guard"
 WINDOWS_FORTRAN_SWITCH = "set(VCPKG_PROVIDED_FORTRAN ON)"
+MACOS_TRIPLET_MARKER = "# QGIS+ minimum deployment target"
+MACOS_DEPLOYMENT_TARGET = "12.0"
+SIP_OVERLAY_MARKER = "# QGIS+ idempotent SIP entry-point wrappers"
+SIP_REGISTRY_BASELINE = "efa37f71edf9c676686040ffc4b7edaf2327e4d0"
 
 
 def _replace_once(path: Path, old: str, new: str) -> None:
@@ -163,6 +169,168 @@ endif()
     path.write_text(content.rstrip() + guard, encoding="utf-8")
 
 
+def patch_macos_triplets(source: Path) -> None:
+    """Compile QGIS and every vcpkg dependency for macOS Monterey or newer."""
+
+    triplets = (
+        "x64-osx-dynamic-release.cmake",
+        "arm64-osx-dynamic-release.cmake",
+    )
+    pattern = re.compile(
+        r"^set\(VCPKG_OSX_DEPLOYMENT_TARGET [^)]+\)$", re.MULTILINE
+    )
+
+    for filename in triplets:
+        path = source / "vcpkg/triplets" / filename
+        content = path.read_text(encoding="utf-8")
+        expected = (
+            f"{MACOS_TRIPLET_MARKER}\n"
+            f"set(VCPKG_OSX_DEPLOYMENT_TARGET {MACOS_DEPLOYMENT_TARGET})"
+        )
+        if MACOS_TRIPLET_MARKER in content:
+            if expected not in content:
+                raise RuntimeError(
+                    f"{path}: QGIS+ macOS deployment target was modified"
+                )
+            continue
+
+        matches = pattern.findall(content)
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"{path}: expected exactly one macOS deployment target, "
+                f"found {len(matches)}"
+            )
+        path.write_text(pattern.sub(expected, content, count=1), encoding="utf-8")
+
+
+def patch_sip_overlay_port(source: Path) -> None:
+    """Override the non-idempotent SIP wrapper from python-registry.
+
+    The upstream helper rewrites any first-line shebang.  On macOS the wheel
+    installer can already produce a ``/bin/sh`` wrapper, so a second rewrite
+    treats ``/bin/sh`` as if it were the Python interpreter and creates a path
+    such as ``../../../../../../bin/sh``.  PyQt then fails only after most of
+    the dependency graph has compiled.  A narrow overlay keeps Windows on the
+    proven upstream implementation and writes relocatable module wrappers on
+    Unix platforms.
+    """
+
+    port_dir = source / "vcpkg/ports/py-sip"
+    portfile = port_dir / "portfile.cmake"
+    manifest = port_dir / "vcpkg.json"
+
+    already_patched = False
+    if port_dir.exists():
+        if portfile.is_file() and SIP_OVERLAY_MARKER in portfile.read_text(
+            encoding="utf-8"
+        ):
+            already_patched = True
+        else:
+            raise RuntimeError(
+                f"{port_dir}: upstream now provides a py-sip overlay; "
+                "review it instead of overwriting it"
+            )
+
+    qgis_manifest = source / "vcpkg/vcpkg.json"
+    try:
+        manifest_data = json.loads(qgis_manifest.read_text(encoding="utf-8"))
+        registries = manifest_data["vcpkg-configuration"]["registries"]
+    except (KeyError, ValueError) as error:
+        raise RuntimeError(
+            f"{qgis_manifest}: cannot resolve the Python registry baseline"
+        ) from error
+    python_registries = [
+        registry
+        for registry in registries
+        if registry.get("repository", "").rstrip("/")
+        == "https://github.com/open-vcpkg/python-registry"
+    ]
+    if len(python_registries) != 1:
+        raise RuntimeError(
+            f"{qgis_manifest}: expected one open-vcpkg Python registry"
+        )
+    actual_baseline = python_registries[0].get("baseline")
+    if actual_baseline != SIP_REGISTRY_BASELINE:
+        raise RuntimeError(
+            f"{qgis_manifest}: Python registry changed from the reviewed "
+            f"{SIP_REGISTRY_BASELINE} baseline to {actual_baseline}; "
+            "review py-sip before updating the overlay"
+        )
+
+    if already_patched:
+        return
+
+    port_dir.mkdir(parents=True)
+    portfile.write_text(
+        f'''vcpkg_from_pythonhosted(
+    OUT_SOURCE_PATH SOURCE_PATH
+    PACKAGE_NAME    sip
+    VERSION         ${{VERSION}}
+    SHA512          4c071ddcd6a16003d825cf6f2951472cb9be1505119eda96371c6a4270ae6ce9f5c7c5cf290316bd9c8006961858d9783a1604478659255057b99374632d4571
+)
+
+vcpkg_python_build_and_install_wheel(SOURCE_PATH "${{SOURCE_PATH}}")
+
+vcpkg_install_copyright(FILE_LIST "${{SOURCE_PATH}}/LICENSE")
+
+# Shiver ... where do they come from
+file(REMOVE_RECURSE
+     "${{CURRENT_PACKAGES_DIR}}/lib/${{python_versioned}}/site-packages/pyqtbuild/bundle/dlls/")
+
+{SIP_OVERLAY_MARKER}
+function(qgisplus_fixup_sip_entry_point script module)
+  if(VCPKG_TARGET_IS_WINDOWS)
+    vcpkg_fixup_shebang(SCRIPT "${{script}}" MODULE "${{module}}")
+    return()
+  endif()
+
+  # 不保留 wheel 生成的绝对解释器路径；脚本安装到 <triplet>/bin，
+  # Python 位于相邻的 <triplet>/tools/python3，因此安装和缓存迁移后仍有效。
+  set(script_path "${{CURRENT_PACKAGES_DIR}}/bin/${{script}}")
+  set(wrapper [=[#!/bin/sh
+exec "$(dirname "$0")/../tools/python3/python3" -m @MODULE@ "$@"
+]=])
+  string(REPLACE "@MODULE@" "${{module}}" wrapper "${{wrapper}}")
+  file(WRITE "${{script_path}}" "${{wrapper}}")
+  file(CHMOD "${{script_path}}" PERMISSIONS
+       OWNER_READ OWNER_WRITE OWNER_EXECUTE
+       GROUP_READ GROUP_EXECUTE
+       WORLD_READ WORLD_EXECUTE)
+endfunction()
+
+qgisplus_fixup_sip_entry_point("sip-build" "sipbuild.tools.build")
+qgisplus_fixup_sip_entry_point("sip-distinfo" "sipbuild.tools.distinfo")
+qgisplus_fixup_sip_entry_point("sip-install" "sipbuild.tools.install")
+qgisplus_fixup_sip_entry_point("sip-module" "sipbuild.tools.module")
+qgisplus_fixup_sip_entry_point("sip-sdist" "sipbuild.tools.sdist")
+qgisplus_fixup_sip_entry_point("sip-wheel" "sipbuild.tools.wheel")
+
+set(VCPKG_POLICY_EMPTY_INCLUDE_FOLDER enabled)
+''',
+        encoding="utf-8",
+    )
+    manifest.write_text(
+        '''{
+  "name": "py-sip",
+  "version": "6.15.3",
+  "description": "A tool that makes it easy to create Python bindings for C and C++ libraries",
+  "homepage": "https://www.riverbankcomputing.com/software/sip",
+  "dependencies": [
+    {
+      "name": "py-setuptools",
+      "host": true
+    },
+    {
+      "name": "vcpkg-python-scripts",
+      "host": true
+    }
+  ]
+}
+''',
+        encoding="utf-8",
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("source", type=Path, help="QGIS source directory")
@@ -173,6 +341,8 @@ def main() -> int:
         patch_main(source)
         patch_cmake(source)
         patch_windows_triplet(source)
+        patch_macos_triplets(source)
+        patch_sip_overlay_port(source)
     except (OSError, RuntimeError) as error:
         print(error, file=sys.stderr)
         return 1

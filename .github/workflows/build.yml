@@ -556,7 +556,7 @@ jobs:
     name: macOS ${{ matrix.name }}
     needs: versions
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 350
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
@@ -565,13 +565,13 @@ jobs:
             os: macos-15-intel
             arch: x86_64
             triplet: x64-osx-dynamic-release
-            deployment_target: "10.15"
+            deployment_target: "12.0"
             artifact_arch: intel
           - name: Apple-Silicon
             os: macos-15
             arch: arm64
             triplet: arm64-osx-dynamic-release
-            deployment_target: "11.0"
+            deployment_target: "12.0"
             artifact_arch: arm64
     env:
       QGIS_SOURCE: ${{ github.workspace }}/upstream/QGIS
@@ -594,6 +594,17 @@ jobs:
           --qgis-tag "${{ needs.versions.outputs.qgis_tag }}"
           --qlementine-tag "${{ needs.versions.outputs.qlementine_tag }}"
 
+      - name: Validate macOS dependency patches
+        run: |
+          test "$(grep -c 'set(VCPKG_OSX_DEPLOYMENT_TARGET 12.0)' \
+            "${QGIS_SOURCE}/vcpkg/triplets/x64-osx-dynamic-release.cmake")" -eq 1
+          test "$(grep -c 'set(VCPKG_OSX_DEPLOYMENT_TARGET 12.0)' \
+            "${QGIS_SOURCE}/vcpkg/triplets/arm64-osx-dynamic-release.cmake")" -eq 1
+          grep -Fq '# QGIS+ idempotent SIP entry-point wrappers' \
+            "${QGIS_SOURCE}/vcpkg/ports/py-sip/portfile.cmake"
+          grep -Fq '../tools/python3/python3' \
+            "${QGIS_SOURCE}/vcpkg/ports/py-sip/portfile.cmake"
+
       - name: Install build tools
         run: |
           brew untap aws/tap || true
@@ -608,8 +619,8 @@ jobs:
         with:
           cmakeVersion: 3.30.4
 
-      - name: Set up QGIS vcpkg
-        uses: ./upstream/QGIS/.github/actions/setup-vcpkg
+      - name: Set up pinned QGIS vcpkg
+        run: bash scripts/setup_macos_vcpkg.sh
 
       - name: Configure gfortran
         run: |
@@ -679,6 +690,16 @@ jobs:
           STYLE_PLUGIN="$(find "${APP_PATH}/Contents/PlugIns/styles" \
             -maxdepth 1 -type f -iname '*qgisplusstyle*' -print -quit)"
           test -n "${STYLE_PLUGIN}"
+          for binary in \
+            "${APP_PATH}/Contents/MacOS/QGIS+" \
+            "${STYLE_PLUGIN}"; do
+            MIN_OS="$(xcrun vtool -show-build "${binary}" | \
+              awk '$1 == "minos" { print $2; exit }')"
+            if [[ "${MIN_OS}" != "12.0" ]]; then
+              echo "Unexpected deployment target ${MIN_OS} in ${binary}" >&2
+              exit 1
+            fi
+          done
           QT_QPA_PLATFORM=offscreen \
             "${APP_PATH}/Contents/MacOS/QGIS+" --version
 
