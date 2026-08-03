@@ -26,11 +26,139 @@ from apply_qgis_patch import (
     patch_windows_triplet,
 )
 from prepare_ifw_package import PACKAGE_ID, prepare_ifw_package
+from prepare_vcpkg_shard import (
+    SHARDS,
+    create_shard_manifest,
+    dependency_shard,
+)
 from resolve_versions import (
     QGIS_RELEASE_RE,
     _qgis_version_from_build_tag,
     _select_release,
 )
+
+
+class VcpkgShardTests(unittest.TestCase):
+    def test_all_dependency_categories_are_stable(self) -> None:
+        self.assertEqual(dependency_shard("qtdeclarative"), "qt")
+        self.assertEqual(dependency_shard("py-pyqt6"), "qt")
+        self.assertEqual(dependency_shard("gdal"), "geo")
+        self.assertEqual(dependency_shard("py-duckdb"), "geo")
+        self.assertEqual(dependency_shard("py-numpy"), "python")
+        self.assertEqual(dependency_shard("protobuf"), "base")
+
+    def test_manifest_features_are_partitioned_without_losing_duplicates(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "vcpkg.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "vcpkg-configuration": {
+                            "default-registry": {
+                                "kind": "git",
+                                "baseline": "a" * 40,
+                                "repository": "https://example.test/vcpkg",
+                            },
+                            "overlay-ports": ["ports"],
+                            "overlay-triplets": ["triplets"],
+                        },
+                        "name": "qgis",
+                        "version-string": "current",
+                        "dependencies": [
+                            {
+                                "name": "gdal",
+                                "default-features": False,
+                                "features": ["zstd"],
+                            },
+                            "qtbase",
+                            "protobuf",
+                        ],
+                        "features": {
+                            "recommended-features": {
+                                "dependencies": [
+                                    {
+                                        "name": "gdal",
+                                        "features": ["parquet"],
+                                    },
+                                    "qtdeclarative",
+                                ]
+                            },
+                            "bindings": {
+                                "dependencies": [
+                                    {
+                                        "name": "gdal",
+                                        "features": ["python"],
+                                    },
+                                    "py-numpy",
+                                    "py-pyqt6",
+                                ]
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            features = ["recommended-features", "bindings"]
+            manifests = {
+                shard: create_shard_manifest(
+                    manifest_path, shard, features
+                )
+                for shard in SHARDS
+            }
+
+            all_dependencies = [
+                item
+                for manifest in manifests.values()
+                for item in manifest["dependencies"]
+            ]
+            self.assertEqual(len(all_dependencies), 8)
+            geo_dependencies = manifests["geo"]["dependencies"]
+            self.assertEqual(
+                [item["name"] for item in geo_dependencies],
+                ["gdal", "gdal", "gdal"],
+            )
+            self.assertEqual(
+                manifests["qt"]["dependencies"],
+                ["qtbase", "qtdeclarative", "py-pyqt6"],
+            )
+            self.assertEqual(
+                manifests["python"]["dependencies"], ["py-numpy"]
+            )
+            self.assertEqual(
+                manifests["base"]["dependencies"], ["protobuf"]
+            )
+            for manifest in manifests.values():
+                config = manifest["vcpkg-configuration"]
+                self.assertEqual(
+                    config["overlay-ports"],
+                    [str((root / "ports").resolve())],
+                )
+                self.assertEqual(
+                    config["overlay-triplets"],
+                    [str((root / "triplets").resolve())],
+                )
+
+    def test_unknown_feature_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manifest_path = Path(directory) / "vcpkg.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "vcpkg-configuration": {},
+                        "dependencies": ["zlib"],
+                        "features": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "Unknown vcpkg"):
+                create_shard_manifest(
+                    manifest_path, "base", ["does-not-exist"]
+                )
 
 
 class WorkflowTests(unittest.TestCase):
@@ -97,7 +225,7 @@ class WorkflowTests(unittest.TestCase):
         )
         self.assertNotIn("ilammy/msvc-dev-cmd@", workflow)
 
-    def test_windows_vcpkg_uses_runner_work_drive_and_resumable_cache(
+    def test_windows_vcpkg_uses_fresh_parallel_run_local_shards(
         self,
     ) -> None:
         workflow = (
@@ -144,13 +272,21 @@ class WorkflowTests(unittest.TestCase):
             "clear;files,D:/vcpkg-binary-cache,readwrite",
             windows_jobs,
         )
-        self.assertGreaterEqual(
-            windows_jobs.count("actions/cache/restore@cdf6c1fa"), 2
+        self.assertNotIn("actions/cache/", windows_jobs)
+        self.assertIn("shard: [base, geo, python, qt]", windows_jobs)
+        self.assertIn("Build dependency shard from source", windows_jobs)
+        self.assertIn("prepare_vcpkg_shard.py", windows_jobs)
+        self.assertIn("--x-manifest-root=", windows_jobs)
+        self.assertIn("--x-install-root=", windows_jobs)
+        self.assertIn(
+            "Upload run-local Windows dependency archives", windows_jobs
         )
-        self.assertIn("actions/cache/save@cdf6c1fa", windows_jobs)
-        self.assertIn("Warm QGIS dependencies", windows_jobs)
-        self.assertIn("timeout-minutes: 330", windows_jobs)
-        self.assertIn("Verify dependency cache is resumable", windows_jobs)
+        self.assertIn(
+            "Download this run's Windows dependency archives", windows_jobs
+        )
+        self.assertIn("${{ github.run_id }}-${{ matrix.shard }}", windows_jobs)
+        self.assertIn("Expected four dependency shards", windows_build)
+        self.assertIn("files,$path,read", windows_build)
         self.assertEqual(
             windows_jobs.count(
                 "Keep Python temporary files on the runner work drive"
@@ -161,7 +297,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(windows_jobs.count('"TMP=$tempRoot"'), 2)
         self.assertEqual(windows_jobs.count('"TMPDIR=$tempRoot"'), 2)
         self.assertEqual(windows_jobs.count("$workDrive -ne $tempDrive"), 2)
-        self.assertIn("upstream/QGIS/vcpkg/vcpkg.json", windows_jobs)
+        self.assertIn('${QGIS_SOURCE}/vcpkg/vcpkg.json', windows_jobs)
         self.assertIn("needs: [versions, windows_dependencies]", windows_build)
         self.assertIn(
             "run: bash scripts/configure_windows_qgis.sh", windows_build
@@ -185,16 +321,10 @@ class WorkflowTests(unittest.TestCase):
             configure_script,
         )
         self.assertIn("-D ENABLE_UNITY_BUILDS=ON", configure_script)
-        self.assertGreaterEqual(
-            windows_jobs.count("continue-on-error: true"), 4
-        )
-        self.assertIn("Save completed Windows dependency cache", windows_build)
-        self.assertIn(
-            "the formal build will continue without the optimization",
-            windows_jobs,
-        )
+        self.assertNotIn("continue-on-error: true", windows_jobs)
+        self.assertNotIn("Save completed Windows dependency cache", windows_build)
 
-    def test_macos_cache_is_owned_by_the_current_repository(self) -> None:
+    def test_macos_vcpkg_uses_fresh_run_local_shards(self) -> None:
         root = Path(__file__).resolve().parents[1]
         workflow = (
             root / ".github/workflows/build.yml"
@@ -209,17 +339,22 @@ class WorkflowTests(unittest.TestCase):
             root / "scripts/configure_macos_qgis.sh"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("packages: write", workflow)
-        self.assertIn(
-            "https://nuget.pkg.github.com/"
-            "${{ github.repository_owner }}/index.json",
-            macos_jobs,
+        self.assertNotIn("packages: write", workflow)
+        self.assertNotIn("nuget.pkg.github.com", macos_jobs)
+        self.assertNotIn("NUGET_", configure_script)
+        self.assertIn("prepare_vcpkg_shard.py", macos_jobs)
+        self.assertEqual(
+            macos_jobs.count("Build dependency shard from source"), 1
+        )
+        self.assertEqual(
+            macos_jobs.count("Upload run-local macOS dependency archives"),
+            1,
         )
         self.assertIn(
-            '-D NUGET_USERNAME="${NUGET_USERNAME}"', configure_script
+            "Download this run's macOS dependency archives", macos_job
         )
-        self.assertIn('-D NUGET_SOURCE="${NUGET_SOURCE}"', configure_script)
-        self.assertNotIn("nuget.pkg.github.com/qgis", macos_jobs)
+        self.assertIn("Expected four dependency shards", macos_job)
+        self.assertIn("${{ github.run_id", macos_jobs)
         self.assertIn(
             "run: bash scripts/setup_macos_vcpkg.sh", macos_job
         )
@@ -256,7 +391,9 @@ class WorkflowTests(unittest.TestCase):
         )
         self.assertNotIn("bootstrap-vcpkg.sh", setup_script)
 
-    def test_macos_dependency_configuration_is_resumable(self) -> None:
+    def test_macos_dependency_configuration_uses_only_current_run(
+        self,
+    ) -> None:
         workflow = (
             Path(__file__).resolve().parents[1]
             / ".github/workflows/build.yml"
@@ -269,15 +406,11 @@ class WorkflowTests(unittest.TestCase):
         )[0]
 
         self.assertIn("needs: [versions, macos_dependencies]", macos_job)
-        self.assertIn(
-            "Seed resumable macOS dependency cache", dependency_job
-        )
-        self.assertIn("continue-on-error: true", dependency_job)
-        self.assertIn("timeout-minutes: 330", dependency_job)
-        self.assertIn(
-            "the macOS build will resume from uploaded packages",
-            dependency_job,
-        )
+        self.assertNotIn("continue-on-error: true", dependency_job)
+        self.assertNotIn("NUGET_", dependency_job)
+        self.assertNotIn("actions/cache/", dependency_job)
+        self.assertIn("retention-days: 1", dependency_job)
+        self.assertIn("compression-level: 0", dependency_job)
         self.assertIn("for attempt in 1 2", macos_job)
         self.assertIn("retrying from the resumable vcpkg state", macos_job)
         self.assertIn('rm -f "${QGIS_BUILD}/CMakeCache.txt"', macos_job)
@@ -314,6 +447,15 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("Validate macOS dependency patches", macos_job)
         self.assertIn("-D CMAKE_BUILD_TYPE=Release", configure_script)
         self.assertIn("-D CMAKE_BUILD_TYPE=Release", macos_job)
+        self.assertIn(
+            'export MACOSX_DEPLOYMENT_TARGET=', configure_script
+        )
+        self.assertIn("-D WITH_ORACLE=OFF", configure_script)
+        self.assertNotIn("--feature oracle", workflow)
+        self.assertIn(
+            "MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}",
+            macos_job,
+        )
         self.assertIn(
             "set(VCPKG_OSX_DEPLOYMENT_TARGET 12.0)", macos_job
         )

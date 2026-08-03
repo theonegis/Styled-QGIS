@@ -11,8 +11,6 @@ on:
 
 permissions:
   contents: write
-  # macOS vcpkg 二进制缓存发布到当前仓库所有者的 GitHub Packages。
-  packages: write
 
 concurrency:
   group: qgis-plus-${{ github.ref }}
@@ -47,14 +45,19 @@ jobs:
         run: cat versions.json
 
   windows_dependencies:
-    name: Warm Windows x64 dependency cache
+    name: Build fresh Windows dependencies (${{ matrix.shard }})
     needs: versions
     runs-on: windows-2022
     timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [base, geo, python, qt]
     env:
       QGIS_SOURCE: ${{ github.workspace }}/upstream/QGIS
-      QGIS_BUILD: ${{ github.workspace }}/upstream/QGIS/build
       VCPKG_BINARY_CACHE_ROOT: D:/vcpkg-binary-cache
+      VCPKG_INSTALL_ROOT: D:/vcpkg-installed
+      VCPKG_MANIFEST_ROOT: D:/vcpkg-manifest
       VCPKG_TRIPLET: x64-windows-release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -142,22 +145,6 @@ jobs:
           $vcpkgRoot |
             Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - name: Restore Windows dependency cache
-        id: warm-vcpkg-cache
-        continue-on-error: true
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
-        with:
-          path: D:/vcpkg-binary-cache
-          key: >-
-            qgisplus-windows-vcpkg-${{
-            needs.versions.outputs.qgis_version }}-${{
-            hashFiles('upstream/QGIS/vcpkg/vcpkg.json',
-            'upstream/QGIS/vcpkg/triplets/x64-windows-release.cmake')
-            }}-${{ github.run_id }}-warmup-${{ github.run_attempt }}
-          restore-keys: |
-            qgisplus-windows-vcpkg-${{ needs.versions.outputs.qgis_version }}-${{ hashFiles('upstream/QGIS/vcpkg/vcpkg.json', 'upstream/QGIS/vcpkg/triplets/x64-windows-release.cmake') }}-
-            qgisplus-windows-vcpkg-${{ needs.versions.outputs.qgis_version }}-
-
       - name: Install flex and bison
         uses: robinraju/release-downloader@28fc21f50d76778e7023361aa1f863e717d3d56f
         with:
@@ -166,43 +153,45 @@ jobs:
           tag: v2.5.24
           extract: true
 
-      - name: Warm QGIS dependencies
-        id: warm-qgis-dependencies
-        continue-on-error: true
-        timeout-minutes: 330
+      - name: Prepare locked dependency shard
+        shell: bash
+        run: |
+          python scripts/prepare_vcpkg_shard.py \
+            --manifest "${QGIS_SOURCE}/vcpkg/vcpkg.json" \
+            --output "${VCPKG_MANIFEST_ROOT}" \
+            --shard "${{ matrix.shard }}" \
+            --feature recommended-features \
+            --feature 3d \
+            --feature auth \
+            --feature bindings \
+            --feature exiv2 \
+            --feature gui \
+            --feature pdal \
+            --feature qtpositioning \
+            --feature sfcgal
+
+      - name: Build dependency shard from source
         shell: bash
         env:
           X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
           VCPKG_BINARY_SOURCES: clear;files,D:/vcpkg-binary-cache,readwrite
-        run: bash scripts/configure_windows_qgis.sh
-
-      - name: Save Windows dependency cache
-        if: >-
-          always() &&
-          steps.warm-vcpkg-cache.outputs.cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
-        with:
-          path: D:/vcpkg-binary-cache
-          key: ${{ steps.warm-vcpkg-cache.outputs.cache-primary-key }}
-
-      - name: Verify dependency cache is resumable
-        if: always()
-        shell: pwsh
         run: |
-          $archives = @(
-            Get-ChildItem `
-              -LiteralPath "$env:VCPKG_BINARY_CACHE_ROOT" `
-              -File `
-              -Recurse `
-              -ErrorAction SilentlyContinue
-          )
-          if ($archives.Count -eq 0) {
-            "::warning::Dependency warm-up produced no reusable vcpkg archives; the formal build will continue without the optimization."
-          } else {
-            "Cached vcpkg archives: $($archives.Count)" |
-              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          }
+          "${VCPKG_ROOT}/vcpkg.exe" install \
+            --x-manifest-root="${VCPKG_MANIFEST_ROOT}" \
+            --x-install-root="${VCPKG_INSTALL_ROOT}" \
+            --triplet="${VCPKG_TRIPLET}" \
+            --host-triplet="${VCPKG_TRIPLET}" \
+            --x-buildtrees-root="${VCPKG_BUILDTREES_ROOT}"
+
+      - name: Upload run-local Windows dependency archives
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: QGISPlus-vcpkg-${{ needs.versions.outputs.qgis_version }}-windows-x64-${{ github.run_id }}-${{ matrix.shard }}
+          path: D:/vcpkg-binary-cache
+          if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 1
 
   windows_build:
     name: Build Windows x64 runtime
@@ -310,21 +299,31 @@ jobs:
           Get-PSDrive -PSProvider FileSystem |
             Format-Table Name, Used, Free, Root
 
-      - name: Restore resumable vcpkg binary cache
-        id: vcpkg-cache
-        continue-on-error: true
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+      - name: Download this run's Windows dependency archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: D:/vcpkg-binary-cache
-          key: >-
-            qgisplus-windows-vcpkg-${{
-            needs.versions.outputs.qgis_version }}-${{
-            hashFiles('upstream/QGIS/vcpkg/vcpkg.json',
-            'upstream/QGIS/vcpkg/triplets/x64-windows-release.cmake')
-            }}-${{ github.run_id }}-build-${{ github.run_attempt }}
-          restore-keys: |
-            qgisplus-windows-vcpkg-${{ needs.versions.outputs.qgis_version }}-${{ hashFiles('upstream/QGIS/vcpkg/vcpkg.json', 'upstream/QGIS/vcpkg/triplets/x64-windows-release.cmake') }}-
-            qgisplus-windows-vcpkg-${{ needs.versions.outputs.qgis_version }}-
+          pattern: QGISPlus-vcpkg-${{ needs.versions.outputs.qgis_version }}-windows-x64-${{ github.run_id }}-*
+          path: D:/vcpkg-shards
+
+      - name: Use only this run's dependency archives
+        shell: pwsh
+        run: |
+          $cacheDirectories = @(
+            Get-ChildItem -LiteralPath D:/vcpkg-shards -Directory
+          )
+          if ($cacheDirectories.Count -ne 4) {
+            throw "Expected four dependency shards, found $($cacheDirectories.Count)"
+          }
+
+          $sources = [System.Collections.Generic.List[string]]::new()
+          $sources.Add("clear")
+          foreach ($directory in $cacheDirectories) {
+            $path = $directory.FullName.Replace('\', '/')
+            $sources.Add("files,$path,read")
+          }
+          $sources.Add("files,D:/vcpkg-binary-cache,readwrite")
+          "VCPKG_BINARY_SOURCES=$($sources -join ';')" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install flex and bison
         uses: robinraju/release-downloader@28fc21f50d76778e7023361aa1f863e717d3d56f
@@ -338,18 +337,7 @@ jobs:
         shell: bash
         env:
           X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
-          VCPKG_BINARY_SOURCES: clear;files,D:/vcpkg-binary-cache,readwrite
         run: bash scripts/configure_windows_qgis.sh
-
-      - name: Save completed Windows dependency cache
-        if: >-
-          always() &&
-          steps.vcpkg-cache.outputs.cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
-        with:
-          path: D:/vcpkg-binary-cache
-          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
 
       - name: Build Qlementine style plugin with QGIS Qt
         shell: bash
@@ -553,10 +541,11 @@ jobs:
           compression-level: 0
 
   macos_dependencies:
-    name: Warm macOS ${{ matrix.name }} dependencies
+    name: >-
+      Build fresh macOS ${{ matrix.name }} dependencies (${{ matrix.shard }})
     needs: versions
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 345
+    timeout-minutes: 350
     strategy:
       fail-fast: false
       matrix:
@@ -566,16 +555,62 @@ jobs:
             arch: x86_64
             triplet: x64-osx-dynamic-release
             deployment_target: "12.0"
+            artifact_arch: intel
+            shard: base
+          - name: Intel
+            os: macos-15-intel
+            arch: x86_64
+            triplet: x64-osx-dynamic-release
+            deployment_target: "12.0"
+            artifact_arch: intel
+            shard: geo
+          - name: Intel
+            os: macos-15-intel
+            arch: x86_64
+            triplet: x64-osx-dynamic-release
+            deployment_target: "12.0"
+            artifact_arch: intel
+            shard: python
+          - name: Intel
+            os: macos-15-intel
+            arch: x86_64
+            triplet: x64-osx-dynamic-release
+            deployment_target: "12.0"
+            artifact_arch: intel
+            shard: qt
           - name: Apple-Silicon
             os: macos-15
             arch: arm64
             triplet: arm64-osx-dynamic-release
             deployment_target: "12.0"
+            artifact_arch: arm64
+            shard: base
+          - name: Apple-Silicon
+            os: macos-15
+            arch: arm64
+            triplet: arm64-osx-dynamic-release
+            deployment_target: "12.0"
+            artifact_arch: arm64
+            shard: geo
+          - name: Apple-Silicon
+            os: macos-15
+            arch: arm64
+            triplet: arm64-osx-dynamic-release
+            deployment_target: "12.0"
+            artifact_arch: arm64
+            shard: python
+          - name: Apple-Silicon
+            os: macos-15
+            arch: arm64
+            triplet: arm64-osx-dynamic-release
+            deployment_target: "12.0"
+            artifact_arch: arm64
+            shard: qt
     env:
       QGIS_SOURCE: ${{ github.workspace }}/upstream/QGIS
-      QGIS_BUILD: ${{ github.workspace }}/upstream/QGIS/build
       FC: gfortran
       GCC_VERSION: "15"
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -620,31 +655,49 @@ jobs:
           sudo ln -sf "${GCC_PREFIX}"/Cellar/gcc@${GCC_VERSION}/*/lib/gcc/${GCC_VERSION} \
             /usr/local/gfortran/lib
 
-      # A cold Intel dependency graph cannot finish within GitHub's six-hour
-      # hosted-runner limit. Completed ports are uploaded to the repository's
-      # NuGet binary cache as they finish; the build job resumes from them.
-      - name: Seed resumable macOS dependency cache
-        id: seed
-        continue-on-error: true
-        timeout-minutes: 330
+      - name: Prepare locked dependency shard
+        run: |
+          python scripts/prepare_vcpkg_shard.py \
+            --manifest "${QGIS_SOURCE}/vcpkg/vcpkg.json" \
+            --output "${RUNNER_TEMP}/vcpkg-manifest" \
+            --shard "${{ matrix.shard }}" \
+            --feature recommended-features \
+            --feature 3d \
+            --feature auth \
+            --feature bindings \
+            --feature exiv2 \
+            --feature gui \
+            --feature pdal \
+            --feature proj-data \
+            --feature qtpositioning \
+            --feature sfcgal
+
+      - name: Build dependency shard from source
         env:
           X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
-          VCPKG_TARGET_TRIPLET: ${{ matrix.triplet }}
-          QGISPLUS_MACOS_ARCH: ${{ matrix.arch }}
-          QGISPLUS_MACOS_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
-          NUGET_USERNAME: ${{ github.actor }}
-          NUGET_SOURCE: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
-          NUGET_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bash scripts/configure_macos_qgis.sh
-
-      - name: Summarize dependency cache seed
-        if: always()
+          VCPKG_BINARY_SOURCES: >-
+            clear;files,${{ runner.temp }}/vcpkg-binary-cache,readwrite
         run: |
-          if [[ "${{ steps.seed.outcome }}" == "success" ]]; then
-            echo "All ${{ matrix.arch }} dependencies are available in the binary cache."
-          else
-            echo "::notice::The warm pass reached its bound; the macOS build will resume from uploaded packages."
-          fi
+          mkdir -p \
+            "${RUNNER_TEMP}/vcpkg-binary-cache" \
+            "${RUNNER_TEMP}/vcpkg-buildtrees" \
+            "${RUNNER_TEMP}/vcpkg-installed"
+          "${VCPKG_ROOT}/vcpkg" install \
+            --x-manifest-root="${RUNNER_TEMP}/vcpkg-manifest" \
+            --x-install-root="${RUNNER_TEMP}/vcpkg-installed" \
+            --triplet="${{ matrix.triplet }}" \
+            --host-triplet="${{ matrix.triplet }}" \
+            --x-buildtrees-root="${RUNNER_TEMP}/vcpkg-buildtrees"
+
+      - name: Upload run-local macOS dependency archives
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: QGISPlus-vcpkg-${{ needs.versions.outputs.qgis_version }}-macos-${{ matrix.artifact_arch }}-${{ github.run_id }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 1
 
   macos:
     name: macOS ${{ matrix.name }}
@@ -674,6 +727,7 @@ jobs:
       STYLE_BUILD: ${{ github.workspace }}/style-build
       FC: gfortran
       GCC_VERSION: "15"
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -729,15 +783,35 @@ jobs:
           sudo ln -sf "${GCC_PREFIX}"/Cellar/gcc@${GCC_VERSION}/*/lib/gcc/${GCC_VERSION} \
             /usr/local/gfortran/lib
 
+      - name: Download this run's macOS dependency archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: QGISPlus-vcpkg-${{ needs.versions.outputs.qgis_version }}-macos-${{ matrix.artifact_arch }}-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/vcpkg-shards
+
+      - name: Use only this run's dependency archives
+        run: |
+          sources="clear"
+          cache_count=0
+          for directory in "${RUNNER_TEMP}/vcpkg-shards"/*; do
+            [[ -d "${directory}" ]] || continue
+            sources+=";files,${directory},read"
+            cache_count=$((cache_count + 1))
+          done
+          if (( cache_count != 4 )); then
+            echo "Expected four dependency shards, found ${cache_count}" >&2
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/vcpkg-binary-cache"
+          sources+=";files,${RUNNER_TEMP}/vcpkg-binary-cache,readwrite"
+          echo "VCPKG_BINARY_SOURCES=${sources}" >> "${GITHUB_ENV}"
+
       - name: Configure QGIS and dependencies
         env:
           X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
           VCPKG_TARGET_TRIPLET: ${{ matrix.triplet }}
           QGISPLUS_MACOS_ARCH: ${{ matrix.arch }}
           QGISPLUS_MACOS_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
-          NUGET_USERNAME: ${{ github.actor }}
-          NUGET_SOURCE: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
-          NUGET_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           configure_qgis() {
             bash scripts/configure_macos_qgis.sh
