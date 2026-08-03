@@ -97,6 +97,12 @@
       ],
       "version": "8.4.1"
     },
+    "cligj": {
+      "requires_dist": [
+        "click>=4.0"
+      ],
+      "version": "0.7.2"
+    },
     "cppy": {
       "requires_dist": [],
       "version": "1.2.1"

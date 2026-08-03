@@ -172,13 +172,19 @@ Windows 与 macOS 都把直接依赖拆为 `base`、`geo`、`python`、`qt` 四�
 的部分缓存；在同一 Actions 运行中选择“重新运行失败的任务”时，会先恢复这些
 缓存再继续。恢复缓存与本次新缓存使用独立目录：缓存不存在或下载失败时直接从
 源码构建；缓存存在但导致安装失败时，会自动禁用它、重置本次安装状态并从源码
-重新构建，缓存故障不会成为构建的硬依赖。`py-libpysal` 导入测试需要但上游端口未声明的
-`py-beautifulsoup4` 与 PySAL 固定在同一个 `geo` 分片，避免隔离安装目录导致
-`ModuleNotFoundError: bs4`。
+重新构建，缓存故障不会成为构建的硬依赖。成功和失败分片的依赖归档均保留 7 天，
+避免稍晚重跑时已失去可恢复状态。
+
+对于已经由构建日志和 PyPI 元数据确认的上游 Python 端口缺陷，工程使用受
+registry baseline 保护的 overlay 显式修复依赖图：`py-libpysal` 补充
+`py-beautifulsoup4`，`py-referencing` 补充 `py-typing-extensions`，
+`py-rasterio` 补充 `py-attrs`、`py-pyparsing` 和本工程锁定的 `py-cligj`。
+这些依赖会进入 vcpkg ABI 哈希，不依赖分片的偶然安装顺序。
 
 依赖矩阵使用 fail-fast；任一分片或后续平台编译、打包步骤失败时，工作流会
 使用仅限 Actions 的 `GITHUB_TOKEN` 取消整个运行。因此一个平台已经确认失败
-后，其他 Windows/macOS Runner 不会继续占用数小时。
+后，其他 Windows/macOS Runner 不会继续占用数小时。失败 Job 会先上传其部分
+依赖缓存或诊断文件，再发出全局取消请求，避免取消动作本身丢失排错与续跑材料。
 
 ### 离线依赖审计与正式编译
 
@@ -191,7 +197,7 @@ Windows 与 macOS 都把直接依赖拆为 `base`、`geo`、`python`、`qt` 四�
    `--only-binarycaching`、`--no-downloads` 和 `x-block-origin`。任何缺失归档
    会立即失败，绝不会临时访问源站或悄悄退回数小时源码构建。
 
-`packaging/python-runtime-lock.json` 保存 QGIS 4.2.1 锁定闭包中 84 个 Python
+`packaging/python-runtime-lock.json` 保存 QGIS 4.2.1 锁定闭包中 85 个 Python
 端口的 PyPI 运行时元数据。更新 QGIS/Python registry 时，先运行
 `scripts/audit_python_runtime_dependencies.py --refresh` 更新一次；平时审计
 直接读取该锁，不访问 PyPI。针对确认过的上游端口问题，本工程使用带 registry

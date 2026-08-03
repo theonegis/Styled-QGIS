@@ -206,13 +206,6 @@ jobs:
             --host-triplet="${VCPKG_TRIPLET}" \
             --x-buildtrees-root="${VCPKG_BUILDTREES_ROOT}"
 
-      - name: Cancel the entire workflow after a dependency failure
-        if: ${{ failure() && !cancelled() }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/cancel_workflow.sh
-
       - name: Upload run-local Windows dependency archives
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -221,10 +214,10 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
           compression-level: 0
-          retention-days: 1
+          retention-days: 7
 
       - name: Preserve partial Windows dependency archives
-        if: failure()
+        if: ${{ failure() && !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: >-
@@ -236,7 +229,14 @@ jobs:
           if-no-files-found: warn
           include-hidden-files: true
           compression-level: 0
-          retention-days: 1
+          retention-days: 7
+
+      - name: Cancel the entire workflow after a dependency failure
+        if: ${{ failure() && !cancelled() }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/cancel_workflow.sh
 
   windows_build:
     name: Build Windows x64 runtime
@@ -575,13 +575,6 @@ jobs:
             throw "QGIS+ uninstall test failed with exit code $LASTEXITCODE"
           }
 
-      - name: Cancel the entire workflow after a packaging failure
-        if: ${{ failure() && !cancelled() }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/cancel_workflow.sh
-
       - name: Upload QtIFW diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -590,6 +583,13 @@ jobs:
           path: ${{ runner.temp }}/qtifw-binarycreator.log
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Cancel the entire workflow after a packaging failure
+        if: ${{ failure() && !cancelled() }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/cancel_workflow.sh
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -765,12 +765,6 @@ jobs:
             --host-triplet="${{ matrix.triplet }}" \
             --x-buildtrees-root="${RUNNER_TEMP}/vcpkg-buildtrees"
 
-      - name: Cancel the entire workflow after a dependency failure
-        if: ${{ failure() && !cancelled() }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/cancel_workflow.sh
-
       - name: Upload run-local macOS dependency archives
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -779,10 +773,10 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
           compression-level: 0
-          retention-days: 1
+          retention-days: 7
 
       - name: Preserve partial macOS dependency archives
-        if: failure()
+        if: ${{ failure() && !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: >-
@@ -794,7 +788,13 @@ jobs:
           if-no-files-found: warn
           include-hidden-files: true
           compression-level: 0
-          retention-days: 1
+          retention-days: 7
+
+      - name: Cancel the entire workflow after a dependency failure
+        if: ${{ failure() && !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/cancel_workflow.sh
 
   macos:
     name: macOS ${{ matrix.name }}
@@ -966,12 +966,6 @@ jobs:
             "${{ matrix.deployment_target }}" 2>&1 | \
             tee "dist/macos-verification-${{ matrix.artifact_arch }}.log"
 
-      - name: Cancel the entire workflow after a macOS build failure
-        if: ${{ failure() && !cancelled() }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/cancel_workflow.sh
-
       - name: Upload macOS verification diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -980,6 +974,12 @@ jobs:
           path: dist/macos-verification-${{ matrix.artifact_arch }}.log
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Cancel the entire workflow after a macOS build failure
+        if: ${{ failure() && !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/cancel_workflow.sh
 
       - name: Create architecture-specific DMG
         run: |

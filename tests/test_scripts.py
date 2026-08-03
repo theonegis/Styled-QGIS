@@ -27,7 +27,7 @@ from apply_qgis_patch import (
     patch_sip_overlay_port,
     patch_windows_triplet,
 )
-from audit_python_runtime_dependencies import audit
+from audit_python_runtime_dependencies import _load_ports, audit
 from prepare_ifw_package import PACKAGE_ID, prepare_ifw_package
 from prepare_vcpkg_shard import (
     SHARDS,
@@ -231,6 +231,46 @@ class VcpkgShardTests(unittest.TestCase):
         self.assertEqual(
             audit(ports, {"py-parent", "py-child"}, metadata), []
         )
+
+    def test_python_runtime_audit_prefers_overlay_manifests(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry_port = root / "registry/ports/py-parent"
+            overlay_port = root / "overlay/py-parent"
+            child_port = root / "registry/ports/py-child"
+            for path in (registry_port, overlay_port, child_port):
+                path.mkdir(parents=True)
+
+            (registry_port / "vcpkg.json").write_text(
+                json.dumps(
+                    {
+                        "name": "py-parent",
+                        "version": "1",
+                        "dependencies": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (overlay_port / "vcpkg.json").write_text(
+                json.dumps(
+                    {
+                        "name": "py-parent",
+                        "version": "1",
+                        "dependencies": ["py-child"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (child_port / "vcpkg.json").write_text(
+                json.dumps({"name": "py-child", "version": "1"}),
+                encoding="utf-8",
+            )
+
+            ports = _load_ports(root / "registry", [root / "overlay"])
+            self.assertEqual(
+                ports["py-parent"]["manifest"]["dependencies"],
+                ["py-child"],
+            )
 
     def test_offline_verifier_blocks_downloads_and_source_builds(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -439,6 +479,47 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("failure() && !cancelled()", workflow)
         self.assertIn(
             'actions/runs/${GITHUB_RUN_ID}/cancel', cancellation_script
+        )
+
+        windows_dependencies = workflow.split(
+            "  windows_dependencies:", 1
+        )[1].split("  windows_build:", 1)[0]
+        macos_dependencies = workflow.split(
+            "  macos_dependencies:", 1
+        )[1].split("  macos:", 1)[0]
+        windows_package = workflow.split("  windows_package:", 1)[1].split(
+            "  macos_dependencies:", 1
+        )[0]
+        macos_build = workflow.split("  macos:", 1)[1].split(
+            "  release:", 1
+        )[0]
+        self.assertLess(
+            windows_dependencies.index(
+                "Preserve partial Windows dependency archives"
+            ),
+            windows_dependencies.index(
+                "Cancel the entire workflow after a dependency failure"
+            ),
+        )
+        self.assertLess(
+            macos_dependencies.index(
+                "Preserve partial macOS dependency archives"
+            ),
+            macos_dependencies.index(
+                "Cancel the entire workflow after a dependency failure"
+            ),
+        )
+        self.assertLess(
+            windows_package.index("Upload QtIFW diagnostics"),
+            windows_package.index(
+                "Cancel the entire workflow after a packaging failure"
+            ),
+        )
+        self.assertLess(
+            macos_build.index("Upload macOS verification diagnostics"),
+            macos_build.index(
+                "Cancel the entire workflow after a macOS build failure"
+            ),
         )
 
     def test_platform_configure_scripts_enforce_offline_inputs(self) -> None:
@@ -761,7 +842,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("continue-on-error: true", dependency_build_step)
         self.assertNotIn("NUGET_", dependency_job)
         self.assertNotIn("actions/cache/", dependency_job)
-        self.assertIn("retention-days: 1", dependency_job)
+        self.assertIn("retention-days: 7", dependency_job)
         self.assertIn("compression-level: 0", dependency_job)
         self.assertIn("for attempt in 1 2", macos_job)
         self.assertIn("retrying from the resumable vcpkg state", macos_job)
@@ -1122,6 +1203,147 @@ class PatchTests(unittest.TestCase):
                 "py-beautifulsoup4",
                 libpysal_manifest["dependencies"],
             )
+
+            cligj_port = root / "vcpkg/ports/py-cligj"
+            cligj_manifest = json.loads(
+                (cligj_port / "vcpkg.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(cligj_manifest["version"], "0.7.2")
+            self.assertIn(
+                "py-click",
+                [
+                    dependency["name"]
+                    if isinstance(dependency, dict)
+                    else dependency
+                    for dependency in cligj_manifest["dependencies"]
+                ],
+            )
+
+            rasterio_port = root / "vcpkg/ports/py-rasterio"
+            rasterio_manifest = json.loads(
+                (rasterio_port / "vcpkg.json").read_text(encoding="utf-8")
+            )
+            rasterio_dependencies = [
+                dependency["name"]
+                if isinstance(dependency, dict)
+                else dependency
+                for dependency in rasterio_manifest["dependencies"]
+            ]
+            for required_dependency in (
+                "py-attrs",
+                "py-cligj",
+                "py-pyparsing",
+            ):
+                self.assertIn(required_dependency, rasterio_dependencies)
+            self.assertTrue(
+                (rasterio_port / "no-gdal-config-autodetect.patch").is_file()
+            )
+
+    def test_modified_runtime_overlay_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_vcpkg_manifest(
+                root, "efa37f71edf9c676686040ffc4b7edaf2327e4d0"
+            )
+            patch_python_runtime_overlays(root)
+            patch_file = (
+                root
+                / "vcpkg/ports/py-rasterio/no-gdal-config-autodetect.patch"
+            )
+            patch_file.write_text("modified\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "missing or modified"):
+                patch_python_runtime_overlays(root)
+
+    def test_rasterio_overlay_matches_locked_runtime_metadata(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_vcpkg_manifest(
+                root, "efa37f71edf9c676686040ffc4b7edaf2327e4d0"
+            )
+            patch_python_runtime_overlays(root)
+            overlay_ports = _load_ports(
+                root / "empty-registry", [root / "vcpkg/ports"]
+            )
+            for port_name, distribution in {
+                "py-affine": "affine",
+                "py-attrs": "attrs",
+                "py-certifi": "certifi",
+                "py-click": "click",
+                "py-numpy": "numpy",
+                "py-pyparsing": "pyparsing",
+            }.items():
+                overlay_ports[port_name] = {
+                    "distribution": distribution,
+                    "manifest": {"dependencies": []},
+                }
+            metadata = json.loads(
+                (project_root / "packaging/python-runtime-lock.json").read_text(
+                    encoding="utf-8"
+                )
+            )["packages"]
+
+            self.assertEqual(
+                audit(
+                    overlay_ports,
+                    {"py-rasterio", "py-cligj"},
+                    metadata,
+                ),
+                [],
+            )
+
+    def test_generated_rasterio_overlay_executes_with_cmake(self) -> None:
+        cmake = shutil.which("cmake")
+        if cmake is None:
+            self.skipTest("CMake is not installed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_vcpkg_manifest(
+                root, "efa37f71edf9c676686040ffc4b7edaf2327e4d0"
+            )
+            patch_python_runtime_overlays(root)
+            installed = root / "installed"
+            spdx = installed / "share/gdal/vcpkg.spdx.json"
+            spdx.parent.mkdir(parents=True)
+            spdx.write_text('{"versionInfo": "3.12.0"}', encoding="utf-8")
+            source = root / "source"
+            source.mkdir()
+            portfile = root / "vcpkg/ports/py-rasterio/portfile.cmake"
+            driver = root / "validate-rasterio-port.cmake"
+            driver.write_text(
+                f'''set(VERSION 1.5.0)
+set(CURRENT_INSTALLED_DIR "{installed.as_posix()}")
+set(CURRENT_PACKAGES_DIR "{(root / "package").as_posix()}")
+
+function(vcpkg_from_pythonhosted)
+  set(SOURCE_PATH "{source.as_posix()}" PARENT_SCOPE)
+endfunction()
+function(vcpkg_python_build_and_install_wheel)
+endfunction()
+function(vcpkg_install_copyright)
+endfunction()
+function(vcpkg_python_test_import)
+endfunction()
+
+include("{portfile.as_posix()}")
+''',
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [cmake, "-P", str(driver)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                result.returncode,
+                0,
+                msg=f"{result.stdout}\n{result.stderr}",
+            )
+            self.assertIn("Detected GDAL version: 3.12.0", result.stdout)
 
     def test_existing_upstream_sip_overlay_is_not_overwritten(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

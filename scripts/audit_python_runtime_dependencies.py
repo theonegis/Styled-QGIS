@@ -36,9 +36,17 @@ PACKAGE_NAME_RE = re.compile(r"^\s*PACKAGE_NAME\s+([^\s)]+)", re.MULTILINE)
 PACKAGE_NAME_OVERRIDES = {"py-dateutil": "python-dateutil"}
 
 
-def _load_ports(registry: Path) -> dict[str, dict[str, Any]]:
+def _load_ports(
+    registry: Path, overlay_directories: list[Path] | None = None
+) -> dict[str, dict[str, Any]]:
     ports: dict[str, dict[str, Any]] = {}
-    for manifest_path in sorted((registry / "ports").glob("py-*/vcpkg.json")):
+    manifest_paths = list(sorted((registry / "ports").glob("py-*/vcpkg.json")))
+    for overlay_directory in overlay_directories or []:
+        manifest_paths.extend(sorted(overlay_directory.glob("py-*/vcpkg.json")))
+
+    # Overlay manifests are appended after registry manifests and therefore
+    # replace the same port name exactly as vcpkg overlay resolution does.
+    for manifest_path in manifest_paths:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         port_name = str(manifest["name"])
         portfile = manifest_path.with_name("portfile.cmake")
@@ -224,12 +232,18 @@ def main() -> int:
     parser.add_argument("--registry", required=True, type=Path)
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--lock", required=True, type=Path)
+    parser.add_argument(
+        "--overlay-ports", action="append", default=[], type=Path
+    )
     parser.add_argument("--feature", action="append", default=[])
     parser.add_argument("--refresh", action="store_true")
     args = parser.parse_args()
 
     try:
-        ports = _load_ports(args.registry.resolve())
+        ports = _load_ports(
+            args.registry.resolve(),
+            [path.resolve() for path in args.overlay_ports],
+        )
         roots = _manifest_roots(args.manifest.resolve(), args.feature)
         closure = _closure(ports, roots)
         metadata = _load_or_refresh_metadata(

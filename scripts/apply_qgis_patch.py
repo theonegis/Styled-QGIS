@@ -444,6 +444,135 @@ set(VCPKG_POLICY_EMPTY_INCLUDE_FOLDER enabled)
                 ],
             },
         },
+        "py-cligj": {
+            "portfile": f'''{PYTHON_RUNTIME_OVERLAY_MARKER}
+set(VCPKG_BUILD_TYPE release)
+
+vcpkg_from_pythonhosted(
+    OUT_SOURCE_PATH SOURCE_PATH
+    PACKAGE_NAME    cligj
+    VERSION         ${{VERSION}}
+    SHA512          3811f95bbd822195675c52e415b18fd591e2dd71113ed84a76880db984f831a0fb9abb8b7c08816d8b32858a414a2dd4eb57a993ecc81a2133644483628f5613
+    FILENAME        cligj
+)
+
+vcpkg_python_build_and_install_wheel(SOURCE_PATH "${{SOURCE_PATH}}")
+vcpkg_install_copyright(FILE_LIST "${{SOURCE_PATH}}/LICENSE")
+vcpkg_python_test_import(MODULE "cligj")
+set(VCPKG_POLICY_EMPTY_INCLUDE_FOLDER enabled)
+''',
+            "manifest": {
+                "name": "py-cligj",
+                "version": "0.7.2",
+                "description": "Click-based helpers for geospatial CLIs.",
+                "homepage": "https://github.com/mapbox/cligj",
+                "license": "BSD-3-Clause",
+                "dependencies": [
+                    {"name": "py-click", "host": True},
+                    {"name": "py-setuptools", "host": True},
+                    "python3",
+                    {"name": "vcpkg-python-scripts", "host": True},
+                ],
+            },
+        },
+        "py-rasterio": {
+            "portfile": f'''{PYTHON_RUNTIME_OVERLAY_MARKER}
+set(VCPKG_BUILD_TYPE release)
+
+vcpkg_from_pythonhosted(
+    OUT_SOURCE_PATH SOURCE_PATH
+    PACKAGE_NAME    rasterio
+    VERSION         ${{VERSION}}
+    SHA512          ce20ca32ea3e4a887dd2fc18ccae4abe774d3754bc560b8a85228d9df58a829e12a04c2dcca2aadbcf888afd6dd89fe5a66cb0ec8231c9d996002ca47742e053
+    FILENAME        rasterio
+    PATCHES
+        no-gdal-config-autodetect.patch
+)
+
+# Read GDAL version from SPDX metadata.
+set(GDAL_SPDX "${{CURRENT_INSTALLED_DIR}}/share/gdal/vcpkg.spdx.json")
+if(NOT EXISTS "${{GDAL_SPDX}}")
+    message(FATAL_ERROR "Could not find ${{GDAL_SPDX}} - is gdal installed?")
+endif()
+file(READ "${{GDAL_SPDX}}" GDAL_SPDX_JSON)
+string(REGEX MATCH "\\\"versionInfo\\\"[ \\t\\r\\n]*:[ \\t\\r\\n]*\\\"([^\\\"]+)\\\"" _ "${{GDAL_SPDX_JSON}}")
+set(GDAL_VERSION "${{CMAKE_MATCH_1}}")
+if(NOT GDAL_VERSION)
+    message(FATAL_ERROR "Failed to extract GDAL version from ${{GDAL_SPDX}}")
+endif()
+message(STATUS "Detected GDAL version: ${{GDAL_VERSION}}")
+set(ENV{{GDAL_VERSION}} "${{GDAL_VERSION}}")
+
+file(WRITE "${{SOURCE_PATH}}/setup.cfg" "
+[build_ext]
+include_dirs=${{CURRENT_INSTALLED_DIR}}/include
+library_dirs=${{CURRENT_INSTALLED_DIR}}/lib
+libraries=gdal
+")
+
+vcpkg_python_build_and_install_wheel(SOURCE_PATH "${{SOURCE_PATH}}")
+vcpkg_install_copyright(FILE_LIST "${{SOURCE_PATH}}/LICENSE.txt")
+vcpkg_python_test_import(MODULE "rasterio")
+set(VCPKG_POLICY_EMPTY_INCLUDE_FOLDER enabled)
+''',
+            "manifest": {
+                "name": "py-rasterio",
+                "version": "1.5.0",
+                "port-version": 1,
+                "description": (
+                    "Fast and direct raster I/O for use with Numpy and SciPy."
+                ),
+                "homepage": "https://rasterio.readthedocs.io/",
+                "dependencies": [
+                    {
+                        "name": "gdal",
+                        "default-features": False,
+                        "features": ["python"],
+                    },
+                    {"name": "py-affine", "host": True},
+                    {"name": "py-attrs", "host": True},
+                    {"name": "py-certifi", "host": True},
+                    {"name": "py-click", "host": True},
+                    {"name": "py-cligj", "host": True},
+                    {"name": "py-cython", "host": True},
+                    {"name": "py-numpy", "host": True},
+                    {"name": "py-pyparsing", "host": True},
+                    {"name": "py-setuptools", "host": True},
+                    "python3",
+                    {"name": "vcpkg-python-scripts", "host": True},
+                ],
+            },
+            "files": {
+                "no-gdal-config-autodetect.patch": '''--- a/setup.py
++++ b/setup.py
+@@ -233,24 +233,6 @@
+         log.info("GDAL API version obtained from gdal-config: %s", gdalversion)
+\x20
+ if "clean" not in sys.argv:
+-    try:
+-        fill_gdal_build_options_using_gdal_config()
+-    except Exception as e:
+-        # Try to run gdalinfo and get information from that instead
+-        log.info(
+-            "Failed to use gdal-config, trying to run gdalinfo instead (gdal-config error of type %s: %s)",
+-            type(e).__name__,
+-            e,
+-        )
+-        try:
+-            fill_gdal_build_options_using_executable(executable_name="gdalinfo")
+-        except Exception as e:
+-            log.warning(
+-                "Failed to get options via both gdal-config and gdalinfo. (gdalinfo error of type %s: %s)",
+-                type(e).__name__,
+-                e,
+-            )
+-
+     # Get GDAL API version from environment variable.
+     if 'GDAL_VERSION' in os.environ:
+         gdalversion = os.environ['GDAL_VERSION']
+''',
+            },
+        },
     }
 
     for port_name, overlay in overlays.items():
@@ -451,17 +580,30 @@ set(VCPKG_POLICY_EMPTY_INCLUDE_FOLDER enabled)
         portfile = port_dir / "portfile.cmake"
         manifest = port_dir / "vcpkg.json"
         if port_dir.exists():
-            if (
-                portfile.is_file()
-                and manifest.is_file()
-                and PYTHON_RUNTIME_OVERLAY_MARKER
-                in portfile.read_text(encoding="utf-8")
-            ):
-                continue
-            raise RuntimeError(
-                f"{port_dir}: upstream now provides a {port_name} overlay; "
-                "review it instead of overwriting it"
-            )
+            if not portfile.is_file() or not manifest.is_file():
+                raise RuntimeError(f"{port_dir}: incomplete overlay port")
+            current_portfile = portfile.read_text(encoding="utf-8")
+            if PYTHON_RUNTIME_OVERLAY_MARKER not in current_portfile:
+                raise RuntimeError(
+                    f"{port_dir}: upstream now provides a {port_name} overlay; "
+                    "review it instead of overwriting it"
+                )
+            if current_portfile != str(overlay["portfile"]):
+                raise RuntimeError(f"{port_dir}: reviewed portfile was modified")
+            current_manifest = json.loads(manifest.read_text(encoding="utf-8"))
+            if current_manifest != overlay["manifest"]:
+                raise RuntimeError(f"{port_dir}: reviewed manifest was modified")
+            for filename, content in overlay.get("files", {}).items():
+                extra_file = port_dir / filename
+                if (
+                    not extra_file.is_file()
+                    or extra_file.read_text(encoding="utf-8") != str(content)
+                ):
+                    raise RuntimeError(
+                        f"{port_dir}: reviewed overlay file {filename} is missing "
+                        "or modified"
+                    )
+            continue
 
         port_dir.mkdir(parents=True)
         portfile.write_text(str(overlay["portfile"]), encoding="utf-8")
@@ -469,6 +611,8 @@ set(VCPKG_POLICY_EMPTY_INCLUDE_FOLDER enabled)
             json.dumps(overlay["manifest"], ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+        for filename, content in overlay.get("files", {}).items():
+            (port_dir / filename).write_text(str(content), encoding="utf-8")
 
 
 def main() -> int:
