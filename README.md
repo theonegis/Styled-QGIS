@@ -164,6 +164,17 @@ QLEMENTINE_TAG=v1.4.2 ./scripts/build_style.sh
 用户手动重跑。Windows 的源码、vcpkg、Python `TEMP/TMP` 和缓存统一位于
 runner 的 `D:` 工作盘，避免 Python Versioneer 跨盘计算相对路径失败。如果
 安装器阶段失败，可以仅重跑失败的打包 Job，复用同一次运行已上传的暂存运行时。
+
+Windows 与 macOS 都把直接依赖拆为 `base`、`geo`、`python`、`qt` 四个并行
+分片。分片内的 vcpkg 安装会在保留现有 buildtree 和二进制缓存的前提下最多
+尝试三次，以承受 GitHub Runner 的短时 DNS/下载故障。失败分片会上传已经生成
+的部分缓存；在同一 Actions 运行中选择“重新运行失败的任务”时，会先恢复这些
+缓存再继续。恢复缓存与本次新缓存使用独立目录：缓存不存在或下载失败时直接从
+源码构建；缓存存在但导致安装失败时，会自动禁用它、重置本次安装状态并从源码
+重新构建，缓存故障不会成为构建的硬依赖。`py-libpysal` 导入测试需要但上游端口未声明的
+`py-beautifulsoup4` 与 PySAL 固定在同一个 `geo` 分片，避免隔离安装目录导致
+`ModuleNotFoundError: bs4`。
+
 Windows triplet 会显式设置 vcpkg 当前版本要求的
 `VCPKG_PROVIDED_FORTRAN=ON`，并屏蔽 hosted runner 上可能被旧版 CMake
 逻辑误选、但无法完成 LAPACK 探测的 LLVM Flang。因此新旧 vcpkg 都会使用

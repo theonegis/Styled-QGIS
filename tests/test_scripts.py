@@ -44,8 +44,166 @@ class VcpkgShardTests(unittest.TestCase):
         self.assertEqual(dependency_shard("py-pyqt6"), "qt")
         self.assertEqual(dependency_shard("gdal"), "geo")
         self.assertEqual(dependency_shard("py-duckdb"), "geo")
+        self.assertEqual(dependency_shard("py-beautifulsoup4"), "geo")
         self.assertEqual(dependency_shard("py-numpy"), "python")
         self.assertEqual(dependency_shard("protobuf"), "base")
+
+    def test_libpysal_import_dependency_stays_in_geo_shard(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "vcpkg.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "vcpkg-configuration": {},
+                        "dependencies": [
+                            "py-pysal",
+                            "py-beautifulsoup4",
+                            "py-numpy",
+                            "protobuf",
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            geo = create_shard_manifest(manifest_path, "geo", [])
+            python = create_shard_manifest(manifest_path, "python", [])
+
+            self.assertEqual(
+                geo["dependencies"],
+                ["py-pysal", "py-beautifulsoup4"],
+            )
+            self.assertEqual(python["dependencies"], ["py-numpy"])
+
+    def test_vcpkg_shard_installer_retries_with_existing_state(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        installer = root / "scripts/install_vcpkg_shard.sh"
+
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            attempts = temp / "attempts.txt"
+            command = temp / "eventually-succeeds.sh"
+            command.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                'count="$(wc -l < "$1" 2>/dev/null || true)"\n'
+                'printf "attempt\\n" >> "$1"\n'
+                '(( count >= 2 ))\n',
+                encoding="utf-8",
+            )
+            command.chmod(0o755)
+            env = os.environ.copy()
+            env["VCPKG_INSTALL_RETRY_DELAY_SECONDS"] = "0"
+            result = subprocess.run(
+                ["bash", str(installer), str(command), str(attempts)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                attempts.read_text(encoding="utf-8").splitlines(),
+                ["attempt", "attempt", "attempt"],
+            )
+            self.assertEqual(result.stdout.count("::warning::"), 2)
+
+    def test_vcpkg_shard_installer_falls_back_from_restored_cache(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        installer = root / "scripts/install_vcpkg_shard.sh"
+
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            restored = temp / "restored"
+            writable = temp / "writable"
+            install_root = temp / "installed"
+            buildtrees = temp / "buildtrees"
+            for path in (restored, writable, install_root, buildtrees):
+                path.mkdir()
+            (restored / "bad.zip").write_text("broken", encoding="utf-8")
+            (install_root / "stale.txt").write_text("stale", encoding="utf-8")
+            (buildtrees / "stale.txt").write_text("stale", encoding="utf-8")
+
+            command = temp / "cache-aware-command.sh"
+            command.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                'if [[ "$VCPKG_BINARY_SOURCES" == *restored* ]]; then\n'
+                "  exit 27\n"
+                "fi\n"
+                '[[ ! -e "$VCPKG_INSTALL_ROOT_TO_RESET/stale.txt" ]]\n'
+                '[[ ! -e "$VCPKG_BUILDTREES_ROOT_TO_RESET/stale.txt" ]]\n'
+                'printf "good" > "$VCPKG_WRITABLE_BINARY_CACHE/good.zip"\n',
+                encoding="utf-8",
+            )
+            command.chmod(0o755)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "VCPKG_INSTALL_RETRY_DELAY_SECONDS": "0",
+                    "VCPKG_BINARY_SOURCES": (
+                        f"clear;files,{restored},read;"
+                        f"files,{writable},readwrite"
+                    ),
+                    "VCPKG_RESTORED_BINARY_CACHE": str(restored),
+                    "VCPKG_WRITABLE_BINARY_CACHE": str(writable),
+                    "VCPKG_INSTALL_ROOT_TO_RESET": str(install_root),
+                    "VCPKG_BUILDTREES_ROOT_TO_RESET": str(buildtrees),
+                }
+            )
+            result = subprocess.run(
+                ["bash", str(installer), str(command)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((writable / "good.zip").is_file())
+            self.assertFalse((writable / "bad.zip").exists())
+            self.assertIn("disabled it", result.stdout)
+
+    def test_successful_restored_cache_is_merged_without_overwrite(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        installer = root / "scripts/install_vcpkg_shard.sh"
+
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            restored = temp / "restored"
+            writable = temp / "writable"
+            restored.mkdir()
+            writable.mkdir()
+            (restored / "only-restored.zip").write_text("cached", encoding="utf-8")
+            (restored / "newer.zip").write_text("old", encoding="utf-8")
+            (writable / "newer.zip").write_text("new", encoding="utf-8")
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "VCPKG_RESTORED_BINARY_CACHE": str(restored),
+                    "VCPKG_WRITABLE_BINARY_CACHE": str(writable),
+                }
+            )
+            result = subprocess.run(
+                ["bash", str(installer), "/usr/bin/true"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                (writable / "only-restored.zip").read_text(encoding="utf-8"),
+                "cached",
+            )
+            self.assertEqual(
+                (writable / "newer.zip").read_text(encoding="utf-8"),
+                "new",
+            )
 
     def test_manifest_features_are_partitioned_without_losing_duplicates(
         self,
@@ -267,15 +425,29 @@ class WorkflowTests(unittest.TestCase):
             'Join-Path $vcpkgRoot "vcpkg.exe"',
             windows_jobs,
         )
-        self.assertIn(
-            "VCPKG_BINARY_SOURCES: "
-            "clear;files,D:/vcpkg-binary-cache,readwrite",
-            windows_jobs,
-        )
         self.assertNotIn("actions/cache/", windows_jobs)
         self.assertIn("shard: [base, geo, python, qt]", windows_jobs)
         self.assertIn("Build dependency shard from source", windows_jobs)
         self.assertIn("prepare_vcpkg_shard.py", windows_jobs)
+        self.assertIn("install_vcpkg_shard.sh", windows_jobs)
+        self.assertIn(
+            "Restore partial Windows shard from a previous attempt",
+            windows_jobs,
+        )
+        self.assertIn(
+            "Preserve partial Windows dependency archives",
+            windows_jobs,
+        )
+        self.assertIn("github.run_attempt > 1", windows_jobs)
+        self.assertIn("QGISPlus-partial-vcpkg-", windows_jobs)
+        self.assertIn("merge-multiple: true", windows_jobs)
+        self.assertIn("D:/vcpkg-restored-binary-cache,read", windows_jobs)
+        self.assertIn("D:/vcpkg-binary-cache,readwrite", windows_jobs)
+        self.assertIn("VCPKG_INSTALL_ROOT_TO_RESET", windows_jobs)
+        self.assertIn(
+            'VCPKG_BUILDTREES_ROOT_TO_RESET="${VCPKG_BUILDTREES_ROOT}"',
+            windows_jobs,
+        )
         self.assertIn("--x-manifest-root=", windows_jobs)
         self.assertIn("--x-install-root=", windows_jobs)
         self.assertIn(
@@ -321,7 +493,12 @@ class WorkflowTests(unittest.TestCase):
             configure_script,
         )
         self.assertIn("-D ENABLE_UNITY_BUILDS=ON", configure_script)
-        self.assertNotIn("continue-on-error: true", windows_jobs)
+        dependency_build_step = windows_jobs.split(
+            "- name: Build dependency shard from source", 1
+        )[1].split(
+            "- name: Upload run-local Windows dependency archives", 1
+        )[0]
+        self.assertNotIn("continue-on-error: true", dependency_build_step)
         self.assertNotIn("Save completed Windows dependency cache", windows_build)
 
     def test_macos_vcpkg_uses_fresh_run_local_shards(self) -> None:
@@ -343,6 +520,21 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("nuget.pkg.github.com", macos_jobs)
         self.assertNotIn("NUGET_", configure_script)
         self.assertIn("prepare_vcpkg_shard.py", macos_jobs)
+        self.assertIn("install_vcpkg_shard.sh", macos_jobs)
+        self.assertIn(
+            "Restore partial macOS shard from a previous attempt",
+            macos_jobs,
+        )
+        self.assertIn(
+            "Preserve partial macOS dependency archives",
+            macos_jobs,
+        )
+        self.assertIn("github.run_attempt > 1", macos_jobs)
+        self.assertIn("QGISPlus-partial-vcpkg-", macos_jobs)
+        self.assertIn("merge-multiple: true", macos_jobs)
+        self.assertIn("vcpkg-restored-binary-cache,read", macos_jobs)
+        self.assertIn("vcpkg-binary-cache,readwrite", macos_jobs)
+        self.assertIn("VCPKG_INSTALL_ROOT_TO_RESET", macos_jobs)
         self.assertEqual(
             macos_jobs.count("Build dependency shard from source"), 1
         )
@@ -406,7 +598,12 @@ class WorkflowTests(unittest.TestCase):
         )[0]
 
         self.assertIn("needs: [versions, macos_dependencies]", macos_job)
-        self.assertNotIn("continue-on-error: true", dependency_job)
+        dependency_build_step = dependency_job.split(
+            "- name: Build dependency shard from source", 1
+        )[1].split(
+            "- name: Upload run-local macOS dependency archives", 1
+        )[0]
+        self.assertNotIn("continue-on-error: true", dependency_build_step)
         self.assertNotIn("NUGET_", dependency_job)
         self.assertNotIn("actions/cache/", dependency_job)
         self.assertIn("retention-days: 1", dependency_job)

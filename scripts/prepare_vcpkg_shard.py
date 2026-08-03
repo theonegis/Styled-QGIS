@@ -42,6 +42,10 @@ GEO_PACKAGES = {
     "sfcgal",
     "py-adbc-postgresql",
     "py-adbc-sqlite",
+    # libpysal imports its examples module during the vcpkg package test.
+    # Keep BeautifulSoup in the same isolated shard so `import libpysal`
+    # succeeds before the four run-local caches are merged.
+    "py-beautifulsoup4",
     "py-duckdb",
     "py-geopandas",
     "py-libpysal",

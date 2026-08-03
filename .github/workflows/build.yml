@@ -56,6 +56,7 @@ jobs:
     env:
       QGIS_SOURCE: ${{ github.workspace }}/upstream/QGIS
       VCPKG_BINARY_CACHE_ROOT: D:/vcpkg-binary-cache
+      VCPKG_RESTORED_BINARY_CACHE_ROOT: D:/vcpkg-restored-binary-cache
       VCPKG_INSTALL_ROOT: D:/vcpkg-installed
       VCPKG_MANIFEST_ROOT: D:/vcpkg-manifest
       VCPKG_TRIPLET: x64-windows-release
@@ -170,13 +171,36 @@ jobs:
             --feature qtpositioning \
             --feature sfcgal
 
+      - name: Restore partial Windows shard from a previous attempt
+        if: github.run_attempt > 1
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: >-
+            QGISPlus-partial-vcpkg-${{
+            needs.versions.outputs.qgis_version }}-windows-x64-${{
+            github.run_id }}-${{ matrix.shard }}-attempt-*
+          path: D:/vcpkg-restored-binary-cache
+          merge-multiple: true
+
       - name: Build dependency shard from source
         shell: bash
         env:
           X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
-          VCPKG_BINARY_SOURCES: clear;files,D:/vcpkg-binary-cache,readwrite
+          VCPKG_BINARY_SOURCES: >-
+            clear;files,D:/vcpkg-restored-binary-cache,read;files,D:/vcpkg-binary-cache,readwrite
+          VCPKG_RESTORED_BINARY_CACHE: D:/vcpkg-restored-binary-cache
+          VCPKG_WRITABLE_BINARY_CACHE: D:/vcpkg-binary-cache
+          VCPKG_INSTALL_ROOT_TO_RESET: D:/vcpkg-installed
         run: |
-          "${VCPKG_ROOT}/vcpkg.exe" install \
+          mkdir -p \
+            "${VCPKG_RESTORED_BINARY_CACHE_ROOT}" \
+            "${VCPKG_BINARY_CACHE_ROOT}" \
+            "${VCPKG_BUILDTREES_ROOT}" \
+            "${VCPKG_INSTALL_ROOT}"
+          export VCPKG_BUILDTREES_ROOT_TO_RESET="${VCPKG_BUILDTREES_ROOT}"
+          bash scripts/install_vcpkg_shard.sh \
+            "${VCPKG_ROOT}/vcpkg.exe" install \
             --x-manifest-root="${VCPKG_MANIFEST_ROOT}" \
             --x-install-root="${VCPKG_INSTALL_ROOT}" \
             --triplet="${VCPKG_TRIPLET}" \
@@ -189,6 +213,21 @@ jobs:
           name: QGISPlus-vcpkg-${{ needs.versions.outputs.qgis_version }}-windows-x64-${{ github.run_id }}-${{ matrix.shard }}
           path: D:/vcpkg-binary-cache
           if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 1
+
+      - name: Preserve partial Windows dependency archives
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: >-
+            QGISPlus-partial-vcpkg-${{
+            needs.versions.outputs.qgis_version }}-windows-x64-${{
+            github.run_id }}-${{ matrix.shard }}-attempt-${{
+            github.run_attempt }}
+          path: D:/vcpkg-binary-cache
+          if-no-files-found: warn
           include-hidden-files: true
           compression-level: 0
           retention-days: 1
@@ -672,17 +711,36 @@ jobs:
             --feature qtpositioning \
             --feature sfcgal
 
+      - name: Restore partial macOS shard from a previous attempt
+        if: github.run_attempt > 1
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: >-
+            QGISPlus-partial-vcpkg-${{
+            needs.versions.outputs.qgis_version }}-macos-${{
+            matrix.artifact_arch }}-${{ github.run_id }}-${{
+            matrix.shard }}-attempt-*
+          path: ${{ runner.temp }}/vcpkg-restored-binary-cache
+          merge-multiple: true
+
       - name: Build dependency shard from source
         env:
           X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
           VCPKG_BINARY_SOURCES: >-
-            clear;files,${{ runner.temp }}/vcpkg-binary-cache,readwrite
+            clear;files,${{ runner.temp }}/vcpkg-restored-binary-cache,read;files,${{ runner.temp }}/vcpkg-binary-cache,readwrite
+          VCPKG_RESTORED_BINARY_CACHE: ${{ runner.temp }}/vcpkg-restored-binary-cache
+          VCPKG_WRITABLE_BINARY_CACHE: ${{ runner.temp }}/vcpkg-binary-cache
+          VCPKG_INSTALL_ROOT_TO_RESET: ${{ runner.temp }}/vcpkg-installed
+          VCPKG_BUILDTREES_ROOT_TO_RESET: ${{ runner.temp }}/vcpkg-buildtrees
         run: |
           mkdir -p \
+            "${RUNNER_TEMP}/vcpkg-restored-binary-cache" \
             "${RUNNER_TEMP}/vcpkg-binary-cache" \
             "${RUNNER_TEMP}/vcpkg-buildtrees" \
             "${RUNNER_TEMP}/vcpkg-installed"
-          "${VCPKG_ROOT}/vcpkg" install \
+          bash scripts/install_vcpkg_shard.sh \
+            "${VCPKG_ROOT}/vcpkg" install \
             --x-manifest-root="${RUNNER_TEMP}/vcpkg-manifest" \
             --x-install-root="${RUNNER_TEMP}/vcpkg-installed" \
             --triplet="${{ matrix.triplet }}" \
@@ -695,6 +753,21 @@ jobs:
           name: QGISPlus-vcpkg-${{ needs.versions.outputs.qgis_version }}-macos-${{ matrix.artifact_arch }}-${{ github.run_id }}-${{ matrix.shard }}
           path: ${{ runner.temp }}/vcpkg-binary-cache
           if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 1
+
+      - name: Preserve partial macOS dependency archives
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: >-
+            QGISPlus-partial-vcpkg-${{
+            needs.versions.outputs.qgis_version }}-macos-${{
+            matrix.artifact_arch }}-${{ github.run_id }}-${{
+            matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          if-no-files-found: warn
           include-hidden-files: true
           compression-level: 0
           retention-days: 1
