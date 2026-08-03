@@ -14,6 +14,7 @@ from apply_qgis_patch import (
     patch_cmake,
     patch_macos_triplets,
     patch_main,
+    patch_python_runtime_overlays,
     patch_sip_overlay_port,
     patch_windows_triplet,
 )
@@ -92,6 +93,7 @@ def main() -> int:
         patch_windows_triplet(qgis_source)
         patch_macos_triplets(qgis_source)
         patch_sip_overlay_port(qgis_source)
+        patch_python_runtime_overlays(qgis_source)
 
         versions = {name: asdict(value) for name, value in releases.items()}
         (output / "versions.json").write_text(

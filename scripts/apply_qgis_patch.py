@@ -18,6 +18,7 @@ MACOS_TRIPLET_MARKER = "# QGIS+ minimum deployment target"
 MACOS_DEPLOYMENT_TARGET = "12.0"
 SIP_OVERLAY_MARKER = "# QGIS+ idempotent SIP entry-point wrappers"
 SIP_REGISTRY_BASELINE = "efa37f71edf9c676686040ffc4b7edaf2327e4d0"
+PYTHON_RUNTIME_OVERLAY_MARKER = "# QGIS+ reviewed Python runtime dependencies"
 
 
 def _replace_once(path: Path, old: str, new: str) -> None:
@@ -331,6 +332,145 @@ set(VCPKG_POLICY_EMPTY_INCLUDE_FOLDER enabled)
     )
 
 
+def patch_python_runtime_overlays(source: Path) -> None:
+    """Repair reviewed runtime dependencies missing from Python registry ports.
+
+    These overlays deliberately pin the complete upstream port definitions,
+    not just manifest ordering.  vcpkg can therefore resolve the dependency
+    edge before it starts building and package tests never depend on which
+    direct manifest entry happened to be installed first.
+    """
+
+    qgis_manifest = source / "vcpkg/vcpkg.json"
+    try:
+        manifest_data = json.loads(qgis_manifest.read_text(encoding="utf-8"))
+        registries = manifest_data["vcpkg-configuration"]["registries"]
+    except (KeyError, ValueError) as error:
+        raise RuntimeError(
+            f"{qgis_manifest}: cannot resolve the Python registry baseline"
+        ) from error
+    python_registries = [
+        registry
+        for registry in registries
+        if registry.get("repository", "").rstrip("/")
+        == "https://github.com/open-vcpkg/python-registry"
+    ]
+    if len(python_registries) != 1:
+        raise RuntimeError(
+            f"{qgis_manifest}: expected one open-vcpkg Python registry"
+        )
+    actual_baseline = python_registries[0].get("baseline")
+    if actual_baseline != SIP_REGISTRY_BASELINE:
+        raise RuntimeError(
+            f"{qgis_manifest}: Python registry changed from the reviewed "
+            f"{SIP_REGISTRY_BASELINE} baseline to {actual_baseline}; "
+            "review Python runtime overlays before updating"
+        )
+
+    overlays = {
+        "py-referencing": {
+            "portfile": f'''{PYTHON_RUNTIME_OVERLAY_MARKER}
+set(VCPKG_BUILD_TYPE release)
+
+vcpkg_from_pythonhosted(
+    OUT_SOURCE_PATH SOURCE_PATH
+    PACKAGE_NAME    referencing
+    VERSION         ${{VERSION}}
+    SHA512          8882ac50849e66da6829772bb6140fbd4c853c7fd7410bedd61b29afe071d3c631382f624f203b446887a86cb0885fbdb946092c2d2ecc1907433fd2ef7cb426
+    FILENAME        referencing
+)
+
+vcpkg_python_build_and_install_wheel(SOURCE_PATH "${{SOURCE_PATH}}")
+vcpkg_install_copyright(FILE_LIST "${{SOURCE_PATH}}/COPYING")
+vcpkg_python_test_import(MODULE "referencing")
+set(VCPKG_POLICY_EMPTY_INCLUDE_FOLDER enabled)
+''',
+            "manifest": {
+                "name": "py-referencing",
+                "version": "0.37.0",
+                "description": "JSON reference resolution.",
+                "homepage": "https://github.com/python-jsonschema/referencing",
+                "dependencies": [
+                    {"name": "py-attrs", "host": True},
+                    {"name": "py-hatchling", "host": True},
+                    {"name": "py-rpds", "host": True},
+                    {"name": "py-setuptools", "host": True},
+                    "py-typing-extensions",
+                    "python3",
+                    {"name": "vcpkg-python-scripts", "host": True},
+                ],
+            },
+        },
+        "py-libpysal": {
+            "portfile": f'''{PYTHON_RUNTIME_OVERLAY_MARKER}
+vcpkg_from_pythonhosted(
+    OUT_SOURCE_PATH SOURCE_PATH
+    PACKAGE_NAME    libpysal
+    VERSION         ${{VERSION}}
+    SHA512          eaab85b8ce83bccd9cb22671f5e27a1db245db850bef7e80f37ce667876bbed91224a20d72ee976f9fbdc9d3f3a90d58343bde1cd0b6f9a2fe1bbf5abd23be3a
+    FILENAME        libpysal
+)
+
+vcpkg_python_build_and_install_wheel(SOURCE_PATH "${{SOURCE_PATH}}")
+vcpkg_install_copyright(FILE_LIST "${{SOURCE_PATH}}/LICENSE.txt")
+vcpkg_python_test_import(MODULE "libpysal")
+set(VCPKG_POLICY_EMPTY_INCLUDE_FOLDER enabled)
+''',
+            "manifest": {
+                "name": "py-libpysal",
+                "version": "4.14.1",
+                "description": (
+                    "Core components of PySAL - A library of spatial "
+                    "analysis functions."
+                ),
+                "homepage": "https://pysal.org/libpysal",
+                "license": "BSD-3-Clause",
+                "dependencies": [
+                    "py-beautifulsoup4",
+                    "py-geopandas",
+                    "py-jinja2",
+                    "py-numpy",
+                    "py-packaging",
+                    "py-pandas",
+                    "py-platformdirs",
+                    "py-requests",
+                    "py-scikit-learn",
+                    "py-scipy",
+                    {"name": "py-setuptools", "host": True},
+                    {"name": "py-setuptools-scm", "host": True},
+                    "py-shapely",
+                    "python3",
+                    {"name": "vcpkg-python-scripts", "host": True},
+                ],
+            },
+        },
+    }
+
+    for port_name, overlay in overlays.items():
+        port_dir = source / "vcpkg/ports" / port_name
+        portfile = port_dir / "portfile.cmake"
+        manifest = port_dir / "vcpkg.json"
+        if port_dir.exists():
+            if (
+                portfile.is_file()
+                and manifest.is_file()
+                and PYTHON_RUNTIME_OVERLAY_MARKER
+                in portfile.read_text(encoding="utf-8")
+            ):
+                continue
+            raise RuntimeError(
+                f"{port_dir}: upstream now provides a {port_name} overlay; "
+                "review it instead of overwriting it"
+            )
+
+        port_dir.mkdir(parents=True)
+        portfile.write_text(str(overlay["portfile"]), encoding="utf-8")
+        manifest.write_text(
+            json.dumps(overlay["manifest"], ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("source", type=Path, help="QGIS source directory")
@@ -343,6 +483,7 @@ def main() -> int:
         patch_windows_triplet(source)
         patch_macos_triplets(source)
         patch_sip_overlay_port(source)
+        patch_python_runtime_overlays(source)
     except (OSError, RuntimeError) as error:
         print(error, file=sys.stderr)
         return 1

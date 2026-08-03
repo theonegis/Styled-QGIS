@@ -140,7 +140,8 @@ QLEMENTINE_TAG=v1.4.2 ./scripts/build_style.sh
 
 `.github/workflows/check.yml` 是快速检查：
 
-- Python 单元测试；
+- `scripts/preflight.sh` 统一执行 Bash/Python/YAML 静态检查、Python 单元测试
+  和 `git diff --check`；提交前可在本地运行同一命令；
 - 最新 Release 解析；
 - 在最新 QGIS 4.x 源码上验证补丁锚点。
 
@@ -175,6 +176,60 @@ Windows 与 macOS 都把直接依赖拆为 `base`、`geo`、`python`、`qt` 四�
 `py-beautifulsoup4` 与 PySAL 固定在同一个 `geo` 分片，避免隔离安装目录导致
 `ModuleNotFoundError: bs4`。
 
+依赖矩阵使用 fail-fast；任一分片或后续平台编译、打包步骤失败时，工作流会
+使用仅限 Actions 的 `GITHUB_TOKEN` 取消整个运行。因此一个平台已经确认失败
+后，其他 Windows/macOS Runner 不会继续占用数小时。
+
+### 离线依赖审计与正式编译
+
+持续从临时 Runner 下载和现场构建所有依赖，只能固定“版本”，不能固定
+“环境”。本工程将可靠构建拆为两个明确阶段：
+
+1. **联网制备阶段**：在目标平台上准备已打补丁源码、vcpkg registry、源码
+   asset cache 和完整 binary cache；该阶段允许访问上游，但不是发布编译。
+2. **离线验证与编译阶段**：只读取上述平台依赖包，vcpkg 同时使用
+   `--only-binarycaching`、`--no-downloads` 和 `x-block-origin`。任何缺失归档
+   会立即失败，绝不会临时访问源站或悄悄退回数小时源码构建。
+
+`packaging/python-runtime-lock.json` 保存 QGIS 4.2.1 锁定闭包中 84 个 Python
+端口的 PyPI 运行时元数据。更新 QGIS/Python registry 时，先运行
+`scripts/audit_python_runtime_dependencies.py --refresh` 更新一次；平时审计
+直接读取该锁，不访问 PyPI。针对确认过的上游端口问题，本工程使用带 registry
+baseline 防护的 overlay 明确补上依赖边，而不是依赖安装顺序。
+
+平台二进制缓存制备完成后，可在断网前执行以下验证（`--binary-cache` 可重复
+提供四个分片目录）：
+
+```bash
+python3 scripts/verify_offline_vcpkg.py \
+  --vcpkg /absolute/path/to/vcpkg \
+  --manifest upstream/QGIS/vcpkg/vcpkg.json \
+  --triplet arm64-osx-dynamic-release \
+  --binary-cache /absolute/path/to/binary-cache \
+  --registries-cache /absolute/path/to/registries \
+  --work-dir build-offline-verify \
+  --feature recommended-features --feature auth \
+  --feature bindings --feature exiv2 --feature gui \
+  --feature proj-data --feature qtpositioning --feature sfcgal
+```
+
+只有该命令对目标 triplet 的四个分片全部成功，依赖包才可标记为可发布输入。
+Windows x64、macOS Intel 和 macOS Apple Silicon 的缓存 ABI 不同，必须各制备
+一份；它们可以在本机、虚拟机或自托管 Runner 上生成，不能跨平台混用。
+
+验证通过后，正式配置 QGIS 时设置 `QGISPLUS_OFFLINE=1`，并传入仅含本地
+`files` 源的 `VCPKG_BINARY_SOURCES`、带 `x-block-origin` 的
+`X_VCPKG_ASSET_SOURCES` 及本地 `X_VCPKG_REGISTRIES_CACHE`。Windows 和 macOS
+配置脚本会自动加入 `--only-binarycaching` 与 `--no-downloads`；任一离线变量
+缺失、二进制源不是本地目录或没有阻断源站时，会在 CMake 开始前退出。这样
+“缓存没命中就联网重编”只允许出现在联网制备阶段，发布编译不会发生该退化。
+
+本工程定位是二维桌面 GIS 美化版，Windows 和 macOS 均明确关闭 QGIS 3D 与
+PDAL 点云支持，并且不再启用 vcpkg 的 `3d`、`pdal` features。这样不仅减少
+QGIS 自身的 3D 源码编译，还从依赖图中去掉 Qt3D 与 PDAL；二维地图、矢量、
+栅格、PyQGIS 和 Processing 不受影响。如未来确实需要三维场景或点云，再将
+这两个选项和对应 feature 成对恢复，避免只启用一半造成配置错误。
+
 Windows triplet 会显式设置 vcpkg 当前版本要求的
 `VCPKG_PROVIDED_FORTRAN=ON`，并屏蔽 hosted runner 上可能被旧版 CMake
 逻辑误选、但无法完成 LAPACK 探测的 LLVM Flang。因此新旧 vcpkg 都会使用
@@ -183,9 +238,9 @@ DLL，避免“依赖编译通过、安装后的程序却缺少 Fortran DLL”�
 恢复与保存只作为加速项，服务临时不可用不会阻断正式构建；正式配置完成后
 还会再次保存完整缓存。
 
-macOS 的 vcpkg 二进制包使用当前仓库所有者名下的 GitHub Packages NuGet
-源读写。这样既能在后续构建中复用依赖，也不会错误地尝试向 QGIS 官方组织的
-包源写入并触发权限错误。
+当前 Actions 的 macOS vcpkg 二进制包只在同一次工作流中通过文件 artifact
+传递，不依赖 GitHub Packages/NuGet 的写入权限。跨运行复用由联网制备阶段
+导出的平台依赖包负责；离线正式编译只读该依赖包。
 
 macOS 不再调用会跟随 `latest` 漂移的上游 `vcpkg-init.sh`，而是从所选 QGIS
 Release 的 `vcpkg.json` 读取 40 位 baseline，检出并启动同一提交的 vcpkg。

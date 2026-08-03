@@ -18,13 +18,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from apply_qgis_patch import (
     MACOS_DEPLOYMENT_TARGET,
+    PYTHON_RUNTIME_OVERLAY_MARKER,
     SIP_OVERLAY_MARKER,
     patch_cmake,
     patch_macos_triplets,
     patch_main,
+    patch_python_runtime_overlays,
     patch_sip_overlay_port,
     patch_windows_triplet,
 )
+from audit_python_runtime_dependencies import audit
 from prepare_ifw_package import PACKAGE_ID, prepare_ifw_package
 from prepare_vcpkg_shard import (
     SHARDS,
@@ -205,6 +208,104 @@ class VcpkgShardTests(unittest.TestCase):
                 "new",
             )
 
+    def test_python_runtime_audit_detects_missing_dependency_edges(self) -> None:
+        ports = {
+            "py-parent": {
+                "distribution": "parent",
+                "manifest": {"dependencies": []},
+            },
+            "py-child": {
+                "distribution": "child",
+                "manifest": {"dependencies": []},
+            },
+        }
+        metadata = {
+            "parent": {"requires_dist": ["child>=1"]},
+            "child": {"requires_dist": []},
+        }
+        self.assertEqual(
+            audit(ports, {"py-parent", "py-child"}, metadata),
+            ["py-parent: missing runtime dependency py-child (child>=1)"],
+        )
+        ports["py-parent"]["manifest"]["dependencies"] = ["py-child"]
+        self.assertEqual(
+            audit(ports, {"py-parent", "py-child"}, metadata), []
+        )
+
+    def test_offline_verifier_blocks_downloads_and_source_builds(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        verifier = root / "scripts/verify_offline_vcpkg.py"
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            manifest = temp / "vcpkg.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "vcpkg-configuration": {
+                            "default-registry": {
+                                "kind": "git",
+                                "baseline": "a" * 40,
+                                "repository": "https://example.test/vcpkg",
+                            }
+                        },
+                        "dependencies": [
+                            "protobuf",
+                            "gdal",
+                            "py-numpy",
+                            "qtbase",
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            cache = temp / "binary-cache"
+            registries = temp / "registries"
+            cache.mkdir()
+            registries.mkdir()
+            log = temp / "vcpkg.log"
+            fake_vcpkg = temp / "vcpkg"
+            fake_vcpkg.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                'printf "%s|%s|%s\\n" '
+                '"$VCPKG_BINARY_SOURCES" "$X_VCPKG_ASSET_SOURCES" "$*" '
+                '>> "$VCPKG_TEST_LOG"\n',
+                encoding="utf-8",
+            )
+            fake_vcpkg.chmod(0o755)
+            env = os.environ.copy()
+            env["VCPKG_TEST_LOG"] = str(log)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(verifier),
+                    "--vcpkg",
+                    str(fake_vcpkg),
+                    "--manifest",
+                    str(manifest),
+                    "--triplet",
+                    "test-triplet",
+                    "--binary-cache",
+                    str(cache),
+                    "--registries-cache",
+                    str(registries),
+                    "--work-dir",
+                    str(temp / "verify"),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            lines = log.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 4)
+            for line in lines:
+                self.assertIn("clear;files,", line)
+                self.assertIn("clear;x-block-origin", line)
+                self.assertIn("--only-binarycaching", line)
+                self.assertIn("--no-downloads", line)
+
     def test_manifest_features_are_partitioned_without_losing_duplicates(
         self,
     ) -> None:
@@ -320,6 +421,60 @@ class VcpkgShardTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_critical_build_failures_cancel_all_platform_jobs(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        workflow = (root / ".github/workflows/build.yml").read_text(
+            encoding="utf-8"
+        )
+        cancellation_script = (
+            root / "scripts/cancel_workflow.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("actions: write", workflow)
+        self.assertNotIn("fail-fast: false", workflow)
+        self.assertEqual(workflow.count("fail-fast: true"), 3)
+        self.assertGreaterEqual(
+            workflow.count("run: bash scripts/cancel_workflow.sh"), 5
+        )
+        self.assertIn("failure() && !cancelled()", workflow)
+        self.assertIn(
+            'actions/runs/${GITHUB_RUN_ID}/cancel', cancellation_script
+        )
+
+    def test_platform_configure_scripts_enforce_offline_inputs(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        for script_name in (
+            "configure_macos_qgis.sh",
+            "configure_windows_qgis.sh",
+        ):
+            script = (root / "scripts" / script_name).read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('QGISPLUS_OFFLINE:-0', script)
+            self.assertIn("VCPKG_BINARY_SOURCES", script)
+            self.assertIn("X_VCPKG_ASSET_SOURCES", script)
+            self.assertIn("X_VCPKG_REGISTRIES_CACHE", script)
+            self.assertIn("x-block-origin", script)
+            self.assertIn("--only-binarycaching", script)
+            self.assertIn("--no-downloads", script)
+
+    def test_platform_builds_disable_3d_and_point_cloud_dependencies(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        workflow = (root / ".github/workflows/build.yml").read_text(
+            encoding="utf-8"
+        )
+        for script_name in (
+            "configure_macos_qgis.sh",
+            "configure_windows_qgis.sh",
+        ):
+            script = (root / "scripts" / script_name).read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("-D WITH_3D=OFF", script)
+            self.assertIn("-D WITH_PDAL=OFF", script)
+        self.assertNotIn("--feature 3d", workflow)
+        self.assertNotIn("--feature pdal", workflow)
+
     def test_remote_actions_use_full_commit_sha(self) -> None:
         workflows = Path(__file__).resolve().parents[1] / ".github/workflows"
         full_sha = re.compile(
@@ -900,7 +1055,7 @@ class PatchTests(unittest.TestCase):
                 '"${_qgisplus_llvm_prefix}/x64/bin"', first_triplet
             )
 
-    def test_macos_triplets_and_sip_overlay_are_idempotent(self) -> None:
+    def test_macos_and_python_overlays_are_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             intel, arm = self._write_macos_triplets(root)
@@ -910,6 +1065,7 @@ class PatchTests(unittest.TestCase):
 
             patch_macos_triplets(root)
             patch_sip_overlay_port(root)
+            patch_python_runtime_overlays(root)
             first_intel = intel.read_text(encoding="utf-8")
             first_arm = arm.read_text(encoding="utf-8")
             portfile = root / "vcpkg/ports/py-sip/portfile.cmake"
@@ -917,6 +1073,7 @@ class PatchTests(unittest.TestCase):
 
             patch_macos_triplets(root)
             patch_sip_overlay_port(root)
+            patch_python_runtime_overlays(root)
             self.assertEqual(first_intel, intel.read_text(encoding="utf-8"))
             self.assertEqual(first_arm, arm.read_text(encoding="utf-8"))
             self.assertEqual(
@@ -942,6 +1099,28 @@ class PatchTests(unittest.TestCase):
                 'qgisplus_fixup_sip_entry_point('
                 '"sip-distinfo" "sipbuild.tools.distinfo")',
                 first_portfile,
+            )
+
+            referencing_port = root / "vcpkg/ports/py-referencing"
+            referencing_portfile = (
+                referencing_port / "portfile.cmake"
+            ).read_text(encoding="utf-8")
+            referencing_manifest = json.loads(
+                (referencing_port / "vcpkg.json").read_text(encoding="utf-8")
+            )
+            self.assertIn(PYTHON_RUNTIME_OVERLAY_MARKER, referencing_portfile)
+            self.assertIn(
+                "py-typing-extensions",
+                referencing_manifest["dependencies"],
+            )
+
+            libpysal_port = root / "vcpkg/ports/py-libpysal"
+            libpysal_manifest = json.loads(
+                (libpysal_port / "vcpkg.json").read_text(encoding="utf-8")
+            )
+            self.assertIn(
+                "py-beautifulsoup4",
+                libpysal_manifest["dependencies"],
             )
 
     def test_existing_upstream_sip_overlay_is_not_overwritten(self) -> None:
@@ -1031,6 +1210,12 @@ include("{portfile.as_posix()}")
             with self.assertRaisesRegex(RuntimeError, "Python registry changed"):
                 patch_sip_overlay_port(root)
             self.assertFalse((root / "vcpkg/ports/py-sip").exists())
+
+            with self.assertRaisesRegex(RuntimeError, "Python registry changed"):
+                patch_python_runtime_overlays(root)
+            self.assertFalse(
+                (root / "vcpkg/ports/py-referencing").exists()
+            )
 
     def test_old_windows_triplet_patch_is_migrated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
