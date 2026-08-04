@@ -626,6 +626,7 @@ class WorkflowTests(unittest.TestCase):
             )
             self.assertIn("-D WITH_3D=OFF", script)
             self.assertIn("-D WITH_PDAL=OFF", script)
+            self.assertIn("-D WITH_DRACO=OFF", script)
         self.assertNotIn("--feature 3d", workflow)
         self.assertNotIn("--feature pdal", workflow)
 

@@ -58,6 +58,7 @@ cmake "${cmake_arguments[@]}" \
   -D WITH_VCPKG=ON \
   -D WITH_3D=OFF \
   -D WITH_PDAL=OFF \
+  -D WITH_DRACO=OFF \
   -D WITH_QTWEBENGINE=OFF \
   -D WITH_BINDINGS=ON \
   -D WITH_ORACLE=OFF \

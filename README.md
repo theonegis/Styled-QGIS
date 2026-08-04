@@ -230,11 +230,13 @@ Windows x64、macOS Intel 和 macOS Apple Silicon 的缓存 ABI 不同，必须�
 缺失、二进制源不是本地目录或没有阻断源站时，会在 CMake 开始前退出。这样
 “缓存没命中就联网重编”只允许出现在联网制备阶段，发布编译不会发生该退化。
 
-本工程定位是二维桌面 GIS 美化版，Windows 和 macOS 均明确关闭 QGIS 3D 与
-PDAL 点云支持，并且不再启用 vcpkg 的 `3d`、`pdal` features。这样不仅减少
-QGIS 自身的 3D 源码编译，还从依赖图中去掉 Qt3D 与 PDAL；二维地图、矢量、
-栅格、PyQGIS 和 Processing 不受影响。如未来确实需要三维场景或点云，再将
-这两个选项和对应 feature 成对恢复，避免只启用一半造成配置错误。
+本工程定位是二维桌面 GIS 美化版，Windows 和 macOS 均明确关闭 QGIS 3D、
+PDAL 点云和 Draco 点云压缩支持，并且不再启用 vcpkg 的 `3d`、`pdal`
+features。QGIS 4.2.1 的 `WITH_DRACO` 默认开启，但其 vcpkg manifest 没有声明
+Draco，必须与其他三维/点云功能一起显式关闭。这样不仅减少 QGIS 自身的相关
+源码编译，还从依赖图中去掉 Qt3D、PDAL 与 Draco；二维地图、矢量、栅格、
+PyQGIS 和 Processing 不受影响。如未来确实需要三维场景或点云，再将这些选项
+和对应依赖 feature 成对恢复，避免只启用一半造成配置错误。
 
 Windows triplet 会显式设置 vcpkg 当前版本要求的
 `VCPKG_PROVIDED_FORTRAN=ON`，并屏蔽 hosted runner 上可能被旧版 CMake
