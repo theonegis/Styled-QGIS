@@ -257,6 +257,10 @@ Intel 与 Apple Silicon 均把 QGIS 顶层构建和 vcpkg triplet 的最低部�
 QGIS triplet 自带的 10.15/11.0 值，因此源码准备阶段会同时修改两个 triplet，
 并在耗时构建开始前进行校验。
 
+macOS Runner 使用系统 Bash 3.2。配置脚本使用始终非空的 CMake 参数数组，并
+分别测试联网和离线配置路径，避免 `set -u` 展开空数组时触发
+`unbound variable` 并连带取消其他平台。
+
 QGIS 4.2.1 所用 Python registry 的 SIP shebang 修复不是幂等的：对已经使用
 `/bin/sh` 的包装器再次处理后，会生成指向工作目录之外的相对路径，最终让
 PyQt6 在 `sip-distinfo` 阶段失败。工程通过窄范围 `py-sip` overlay port 在

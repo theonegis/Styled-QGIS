@@ -461,6 +461,79 @@ class VcpkgShardTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_macos_configure_supports_empty_and_offline_options_on_bash_3(
+        self,
+    ) -> None:
+        root = Path(__file__).resolve().parents[1]
+        script = root / "scripts/configure_macos_qgis.sh"
+        script_text = script.read_text(encoding="utf-8")
+        self.assertIn("cmake_arguments=(", script_text)
+        self.assertNotIn("vcpkg_install_options=()", script_text)
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            fake_bin = temp / "bin"
+            fake_bin.mkdir()
+            fake_cmake = fake_bin / "cmake"
+            fake_cmake.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "printf '%s\\n' \"$@\" > \"$CMAKE_TEST_LOG\"\n",
+                encoding="utf-8",
+            )
+            fake_cmake.chmod(0o755)
+
+            base_env = os.environ.copy()
+            base_env.update(
+                {
+                    "PATH": f"{fake_bin}{os.pathsep}{base_env['PATH']}",
+                    "QGIS_SOURCE": str(temp / "source"),
+                    "QGIS_BUILD": str(temp / "build"),
+                    "VCPKG_TARGET_TRIPLET": "x64-osx-dynamic-release",
+                    "QGISPLUS_MACOS_ARCH": "x86_64",
+                    "QGISPLUS_MACOS_DEPLOYMENT_TARGET": "12.0",
+                }
+            )
+            base_env.pop("QGISPLUS_OFFLINE", None)
+
+            for offline in (False, True):
+                with self.subTest(offline=offline):
+                    log = temp / f"cmake-{offline}.log"
+                    env = base_env.copy()
+                    env["CMAKE_TEST_LOG"] = str(log)
+                    if offline:
+                        env.update(
+                            {
+                                "QGISPLUS_OFFLINE": "1",
+                                "VCPKG_BINARY_SOURCES": (
+                                    "clear;files,/tmp/cache,read"
+                                ),
+                                "X_VCPKG_ASSET_SOURCES": (
+                                    "clear;x-block-origin"
+                                ),
+                                "X_VCPKG_REGISTRIES_CACHE": (
+                                    "/tmp/registries"
+                                ),
+                            }
+                        )
+                    result = subprocess.run(
+                        ["/bin/bash", str(script)],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        env=env,
+                    )
+                    self.assertEqual(
+                        result.returncode,
+                        0,
+                        msg=f"{result.stdout}\n{result.stderr}",
+                    )
+                    arguments = log.read_text(encoding="utf-8").splitlines()
+                    install_option = (
+                        "VCPKG_INSTALL_OPTIONS="
+                        "--only-binarycaching;--no-downloads"
+                    )
+                    self.assertEqual(install_option in arguments, offline)
+
     def test_critical_build_failures_cancel_all_platform_jobs(self) -> None:
         root = Path(__file__).resolve().parents[1]
         workflow = (root / ".github/workflows/build.yml").read_text(

@@ -13,7 +13,11 @@ set -euo pipefail
 # compiler invocation in the vcpkg dependency graph target Monterey as well.
 export MACOSX_DEPLOYMENT_TARGET="${QGISPLUS_MACOS_DEPLOYMENT_TARGET}"
 
-vcpkg_install_options=()
+cmake_arguments=(
+  -S "${QGIS_SOURCE}"
+  -B "${QGIS_BUILD}"
+  -G Ninja
+)
 if [[ "${QGISPLUS_OFFLINE:-0}" == "1" ]]; then
   required_offline_variables=(
     VCPKG_BINARY_SOURCES
@@ -41,14 +45,14 @@ if [[ "${QGISPLUS_OFFLINE:-0}" == "1" ]]; then
     echo "Offline build requires exactly clear;x-block-origin" >&2
     exit 1
   fi
-  vcpkg_install_options=(
+  cmake_arguments+=(
     -D "VCPKG_INSTALL_OPTIONS=--only-binarycaching;--no-downloads"
   )
 fi
 
 # Oracle's prebuilt macOS client requires macOS 13 and cannot be rebuilt for
 # the QGIS+ Monterey deployment target.
-cmake -S "${QGIS_SOURCE}" -B "${QGIS_BUILD}" -G Ninja \
+cmake "${cmake_arguments[@]}" \
   -D QGIS_APP_NAME="QGIS+" \
   -D CMAKE_BUILD_TYPE=Release \
   -D WITH_VCPKG=ON \
@@ -66,5 +70,4 @@ cmake -S "${QGIS_SOURCE}" -B "${QGIS_BUILD}" -G Ninja \
   -D CMAKE_OSX_DEPLOYMENT_TARGET="${QGISPLUS_MACOS_DEPLOYMENT_TARGET}" \
   -D CMAKE_OSX_ARCHITECTURES="${QGISPLUS_MACOS_ARCH}" \
   -D ENABLE_UNITY_BUILDS=ON \
-  -D CMAKE_UNITY_BUILD_BATCH_SIZE=4 \
-  "${vcpkg_install_options[@]}"
+  -D CMAKE_UNITY_BUILD_BATCH_SIZE=4
