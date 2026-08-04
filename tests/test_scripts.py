@@ -66,6 +66,56 @@ class VcpkgShardTests(unittest.TestCase):
         self.assertIn("started", result.stdout)
         self.assertIn("produced no output", result.stderr)
 
+    def test_asset_cache_timeout_is_shorter_and_distinguishable(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        watchdog = root / "scripts/run_with_idle_timeout.py"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(watchdog),
+                "--idle-timeout",
+                "2",
+                "--asset-cache-idle-timeout",
+                "0.2",
+                "--",
+                sys.executable,
+                "-c",
+                "import time; print('Trying to download archive using asset cache', flush=True); time.sleep(5)",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+        self.assertEqual(result.returncode, 125, result.stderr)
+        self.assertIn("while reading the vcpkg asset cache", result.stderr)
+
+    def test_asset_cache_timeout_does_not_limit_a_quiet_build(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        watchdog = root / "scripts/run_with_idle_timeout.py"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(watchdog),
+                "--idle-timeout",
+                "1",
+                "--asset-cache-idle-timeout",
+                "0.1",
+                "--",
+                sys.executable,
+                "-c",
+                "import time; print('-- Building release', flush=True); time.sleep(0.3); print('finished', flush=True)",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("finished", result.stdout)
+
     def test_all_dependency_categories_are_stable(self) -> None:
         self.assertEqual(dependency_shard("qtdeclarative"), "qt")
         self.assertEqual(dependency_shard("py-pyqt6"), "qt")
@@ -147,7 +197,7 @@ class VcpkgShardTests(unittest.TestCase):
                 "#!/usr/bin/env bash\n"
                 "set -euo pipefail\n"
                 'if [[ -n "${X_VCPKG_ASSET_SOURCES:-}" ]]; then\n'
-                "  exit 124\n"
+                "  exit 125\n"
                 "fi\n"
                 'printf "authoritative-source\\n"\n',
                 encoding="utf-8",
@@ -814,7 +864,11 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("D:/vcpkg-restored-binary-cache,read", windows_jobs)
         self.assertIn("D:/vcpkg-binary-cache,readwrite", windows_jobs)
         self.assertIn("VCPKG_INSTALL_ROOT_TO_RESET", windows_jobs)
-        self.assertIn('VCPKG_IDLE_TIMEOUT_SECONDS: "1800"', windows_jobs)
+        self.assertIn('VCPKG_IDLE_TIMEOUT_SECONDS: "7200"', windows_jobs)
+        self.assertIn(
+            'VCPKG_ASSET_CACHE_IDLE_TIMEOUT_SECONDS: "900"',
+            windows_jobs,
+        )
         self.assertIn(
             'VCPKG_BUILDTREES_ROOT_TO_RESET="${VCPKG_BUILDTREES_ROOT}"',
             windows_jobs,
@@ -906,7 +960,11 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("vcpkg-restored-binary-cache,read", macos_jobs)
         self.assertIn("vcpkg-binary-cache,readwrite", macos_jobs)
         self.assertIn("VCPKG_INSTALL_ROOT_TO_RESET", macos_jobs)
-        self.assertIn('VCPKG_IDLE_TIMEOUT_SECONDS: "1800"', macos_jobs)
+        self.assertIn('VCPKG_IDLE_TIMEOUT_SECONDS: "7200"', macos_jobs)
+        self.assertIn(
+            'VCPKG_ASSET_CACHE_IDLE_TIMEOUT_SECONDS: "900"',
+            macos_jobs,
+        )
         self.assertEqual(
             macos_jobs.count("Build dependency shard from source"), 1
         )

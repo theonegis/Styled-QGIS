@@ -191,7 +191,8 @@ jobs:
           VCPKG_RESTORED_BINARY_CACHE: D:/vcpkg-restored-binary-cache
           VCPKG_WRITABLE_BINARY_CACHE: D:/vcpkg-binary-cache
           VCPKG_INSTALL_ROOT_TO_RESET: D:/vcpkg-installed
-          VCPKG_IDLE_TIMEOUT_SECONDS: "1800"
+          VCPKG_IDLE_TIMEOUT_SECONDS: "7200"
+          VCPKG_ASSET_CACHE_IDLE_TIMEOUT_SECONDS: "900"
         run: |
           mkdir -p \
             "${VCPKG_RESTORED_BINARY_CACHE_ROOT}" \
@@ -386,7 +387,8 @@ jobs:
         run: |
           configure_qgis() {
             python3 scripts/run_with_idle_timeout.py \
-              --idle-timeout 1800 -- \
+              --idle-timeout 7200 \
+              --asset-cache-idle-timeout 900 -- \
               bash scripts/configure_windows_qgis.sh
           }
 
@@ -402,7 +404,7 @@ jobs:
             if (( attempt == 2 )); then
               break
             fi
-            if (( status == 124 )); then
+            if (( status == 125 )); then
               unset X_VCPKG_ASSET_SOURCES
               echo "::warning::QGIS configuration became idle; retrying without the vcpkg asset cache"
             else
@@ -783,7 +785,8 @@ jobs:
           VCPKG_WRITABLE_BINARY_CACHE: ${{ runner.temp }}/vcpkg-binary-cache
           VCPKG_INSTALL_ROOT_TO_RESET: ${{ runner.temp }}/vcpkg-installed
           VCPKG_BUILDTREES_ROOT_TO_RESET: ${{ runner.temp }}/vcpkg-buildtrees
-          VCPKG_IDLE_TIMEOUT_SECONDS: "1800"
+          VCPKG_IDLE_TIMEOUT_SECONDS: "7200"
+          VCPKG_ASSET_CACHE_IDLE_TIMEOUT_SECONDS: "900"
         run: |
           mkdir -p \
             "${RUNNER_TEMP}/vcpkg-restored-binary-cache" \
@@ -945,7 +948,8 @@ jobs:
         run: |
           configure_qgis() {
             python3 scripts/run_with_idle_timeout.py \
-              --idle-timeout 1800 -- \
+              --idle-timeout 7200 \
+              --asset-cache-idle-timeout 900 -- \
               bash scripts/configure_macos_qgis.sh
           }
 
@@ -961,7 +965,7 @@ jobs:
             if (( attempt == 2 )); then
               break
             fi
-            if (( status == 124 )); then
+            if (( status == 125 )); then
               unset X_VCPKG_ASSET_SOURCES
               echo "::warning::QGIS configuration became idle; retrying without the vcpkg asset cache"
             else

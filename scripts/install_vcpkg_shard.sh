@@ -14,6 +14,7 @@ writable_cache="${VCPKG_WRITABLE_BINARY_CACHE:-}"
 install_root="${VCPKG_INSTALL_ROOT_TO_RESET:-}"
 buildtrees_root="${VCPKG_BUILDTREES_ROOT_TO_RESET:-}"
 idle_timeout="${VCPKG_IDLE_TIMEOUT_SECONDS:-0}"
+asset_cache_idle_timeout="${VCPKG_ASSET_CACHE_IDLE_TIMEOUT_SECONDS:-0}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ ! "$max_attempts" =~ ^[1-9][0-9]*$ ]]; then
@@ -28,11 +29,21 @@ if [[ ! "$idle_timeout" =~ ^[0-9]+$ ]]; then
     echo "VCPKG_IDLE_TIMEOUT_SECONDS must be a non-negative integer" >&2
     exit 2
 fi
+if [[ ! "$asset_cache_idle_timeout" =~ ^[0-9]+$ ]]; then
+    echo "VCPKG_ASSET_CACHE_IDLE_TIMEOUT_SECONDS must be a non-negative integer" >&2
+    exit 2
+fi
 
 run_install() {
     if (( idle_timeout > 0 )); then
+        watchdog_arguments=(--idle-timeout "$idle_timeout")
+        if (( asset_cache_idle_timeout > 0 )); then
+            watchdog_arguments+=(
+                --asset-cache-idle-timeout "$asset_cache_idle_timeout"
+            )
+        fi
         python3 "${script_dir}/run_with_idle_timeout.py" \
-            --idle-timeout "$idle_timeout" -- "$@"
+            "${watchdog_arguments[@]}" -- "$@"
     else
         "$@"
     fi
@@ -99,7 +110,7 @@ while (( attempt <= max_attempts )); do
         exit "$status"
     fi
 
-    if (( status == 124 )) && [[ -n "${X_VCPKG_ASSET_SOURCES:-}" ]]; then
+    if (( status == 125 )) && [[ -n "${X_VCPKG_ASSET_SOURCES:-}" ]]; then
         unset X_VCPKG_ASSET_SOURCES
         echo "::warning::The vcpkg asset cache became idle; disabled it so the next attempt uses authoritative sources"
     fi
