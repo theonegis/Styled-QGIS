@@ -42,6 +42,30 @@ from resolve_versions import (
 
 
 class VcpkgShardTests(unittest.TestCase):
+    def test_idle_timeout_stops_a_silent_process_tree(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        watchdog = root / "scripts/run_with_idle_timeout.py"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(watchdog),
+                "--idle-timeout",
+                "0.2",
+                "--",
+                sys.executable,
+                "-c",
+                "import time; print('started', flush=True); time.sleep(5)",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+        self.assertEqual(result.returncode, 124, result.stderr)
+        self.assertIn("started", result.stdout)
+        self.assertIn("produced no output", result.stderr)
+
     def test_all_dependency_categories_are_stable(self) -> None:
         self.assertEqual(dependency_shard("qtdeclarative"), "qt")
         self.assertEqual(dependency_shard("py-pyqt6"), "qt")
@@ -112,6 +136,42 @@ class VcpkgShardTests(unittest.TestCase):
                 ["attempt", "attempt", "attempt"],
             )
             self.assertEqual(result.stdout.count("::warning::"), 2)
+
+    def test_vcpkg_shard_installer_bypasses_stalled_asset_cache(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        installer = root / "scripts/install_vcpkg_shard.sh"
+
+        with tempfile.TemporaryDirectory() as directory:
+            command = Path(directory) / "asset-cache-aware-command.sh"
+            command.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                'if [[ -n "${X_VCPKG_ASSET_SOURCES:-}" ]]; then\n'
+                "  exit 124\n"
+                "fi\n"
+                'printf "authoritative-source\\n"\n',
+                encoding="utf-8",
+            )
+            command.chmod(0o755)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "VCPKG_INSTALL_MAX_ATTEMPTS": "2",
+                    "VCPKG_INSTALL_RETRY_DELAY_SECONDS": "0",
+                    "X_VCPKG_ASSET_SOURCES": "x-azurl,https://cache.invalid,,read",
+                }
+            )
+            result = subprocess.run(
+                ["bash", str(installer), str(command)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("asset cache became idle", result.stdout)
+            self.assertIn("authoritative-source", result.stdout)
 
     def test_vcpkg_shard_installer_falls_back_from_restored_cache(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -754,6 +814,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("D:/vcpkg-restored-binary-cache,read", windows_jobs)
         self.assertIn("D:/vcpkg-binary-cache,readwrite", windows_jobs)
         self.assertIn("VCPKG_INSTALL_ROOT_TO_RESET", windows_jobs)
+        self.assertIn('VCPKG_IDLE_TIMEOUT_SECONDS: "1800"', windows_jobs)
         self.assertIn(
             'VCPKG_BUILDTREES_ROOT_TO_RESET="${VCPKG_BUILDTREES_ROOT}"',
             windows_jobs,
@@ -781,9 +842,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(windows_jobs.count("$workDrive -ne $tempDrive"), 2)
         self.assertIn('${QGIS_SOURCE}/vcpkg/vcpkg.json', windows_jobs)
         self.assertIn("needs: [versions, windows_dependencies]", windows_build)
-        self.assertIn(
-            "run: bash scripts/configure_windows_qgis.sh", windows_build
-        )
+        self.assertIn("run_with_idle_timeout.py", windows_build)
+        self.assertIn("bash scripts/configure_windows_qgis.sh", windows_build)
+        self.assertIn("retrying without the vcpkg asset cache", windows_build)
         self.assertNotIn(
             "uses: ./upstream/QGIS/.github/actions/setup-vcpkg",
             windows_jobs,
@@ -845,6 +906,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("vcpkg-restored-binary-cache,read", macos_jobs)
         self.assertIn("vcpkg-binary-cache,readwrite", macos_jobs)
         self.assertIn("VCPKG_INSTALL_ROOT_TO_RESET", macos_jobs)
+        self.assertIn('VCPKG_IDLE_TIMEOUT_SECONDS: "1800"', macos_jobs)
         self.assertEqual(
             macos_jobs.count("Build dependency shard from source"), 1
         )
@@ -919,6 +981,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("retention-days: 7", dependency_job)
         self.assertIn("compression-level: 0", dependency_job)
         self.assertIn("for attempt in 1 2", macos_job)
+        self.assertIn("run_with_idle_timeout.py", macos_job)
+        self.assertIn("retrying without the vcpkg asset cache", macos_job)
         self.assertIn("retrying from the resumable vcpkg state", macos_job)
         self.assertIn('rm -f "${QGIS_BUILD}/CMakeCache.txt"', macos_job)
         self.assertIn('rm -rf "${QGIS_BUILD}/CMakeFiles"', macos_job)

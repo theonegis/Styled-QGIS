@@ -13,6 +13,8 @@ restored_cache="${VCPKG_RESTORED_BINARY_CACHE:-}"
 writable_cache="${VCPKG_WRITABLE_BINARY_CACHE:-}"
 install_root="${VCPKG_INSTALL_ROOT_TO_RESET:-}"
 buildtrees_root="${VCPKG_BUILDTREES_ROOT_TO_RESET:-}"
+idle_timeout="${VCPKG_IDLE_TIMEOUT_SECONDS:-0}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ ! "$max_attempts" =~ ^[1-9][0-9]*$ ]]; then
     echo "VCPKG_INSTALL_MAX_ATTEMPTS must be a positive integer" >&2
@@ -22,6 +24,19 @@ if [[ ! "$retry_delay" =~ ^[0-9]+$ ]]; then
     echo "VCPKG_INSTALL_RETRY_DELAY_SECONDS must be a non-negative integer" >&2
     exit 2
 fi
+if [[ ! "$idle_timeout" =~ ^[0-9]+$ ]]; then
+    echo "VCPKG_IDLE_TIMEOUT_SECONDS must be a non-negative integer" >&2
+    exit 2
+fi
+
+run_install() {
+    if (( idle_timeout > 0 )); then
+        python3 "${script_dir}/run_with_idle_timeout.py" \
+            --idle-timeout "$idle_timeout" -- "$@"
+    else
+        "$@"
+    fi
+}
 
 cache_has_files() {
     [[ -n "$restored_cache" && -d "$restored_cache" ]] &&
@@ -71,7 +86,7 @@ merge_restored_cache() {
 attempt=1
 while (( attempt <= max_attempts )); do
     set +e
-    "$@"
+    run_install "$@"
     status=$?
     set -e
 
@@ -82,6 +97,11 @@ while (( attempt <= max_attempts )); do
     if (( attempt == max_attempts )); then
         echo "vcpkg install failed after ${max_attempts} attempts" >&2
         exit "$status"
+    fi
+
+    if (( status == 124 )) && [[ -n "${X_VCPKG_ASSET_SOURCES:-}" ]]; then
+        unset X_VCPKG_ASSET_SOURCES
+        echo "::warning::The vcpkg asset cache became idle; disabled it so the next attempt uses authoritative sources"
     fi
 
     if cache_has_files; then

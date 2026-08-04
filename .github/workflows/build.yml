@@ -191,6 +191,7 @@ jobs:
           VCPKG_RESTORED_BINARY_CACHE: D:/vcpkg-restored-binary-cache
           VCPKG_WRITABLE_BINARY_CACHE: D:/vcpkg-binary-cache
           VCPKG_INSTALL_ROOT_TO_RESET: D:/vcpkg-installed
+          VCPKG_IDLE_TIMEOUT_SECONDS: "1800"
         run: |
           mkdir -p \
             "${VCPKG_RESTORED_BINARY_CACHE_ROOT}" \
@@ -382,7 +383,38 @@ jobs:
         shell: bash
         env:
           X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
-        run: bash scripts/configure_windows_qgis.sh
+        run: |
+          configure_qgis() {
+            python3 scripts/run_with_idle_timeout.py \
+              --idle-timeout 1800 -- \
+              bash scripts/configure_windows_qgis.sh
+          }
+
+          configured=false
+          for attempt in 1 2; do
+            status=0
+            if configure_qgis; then
+              configured=true
+              break
+            else
+              status=$?
+            fi
+            if (( attempt == 2 )); then
+              break
+            fi
+            if (( status == 124 )); then
+              unset X_VCPKG_ASSET_SOURCES
+              echo "::warning::QGIS configuration became idle; retrying without the vcpkg asset cache"
+            else
+              echo "::warning::QGIS dependency configuration failed; retrying from the resumable vcpkg state"
+            fi
+            rm -f "${QGIS_BUILD}/CMakeCache.txt"
+            rm -rf "${QGIS_BUILD}/CMakeFiles"
+            sleep 10
+          done
+          if [[ "${configured}" != true ]]; then
+            exit 1
+          fi
 
       - name: Build Qlementine style plugin with QGIS Qt
         shell: bash
@@ -751,6 +783,7 @@ jobs:
           VCPKG_WRITABLE_BINARY_CACHE: ${{ runner.temp }}/vcpkg-binary-cache
           VCPKG_INSTALL_ROOT_TO_RESET: ${{ runner.temp }}/vcpkg-installed
           VCPKG_BUILDTREES_ROOT_TO_RESET: ${{ runner.temp }}/vcpkg-buildtrees
+          VCPKG_IDLE_TIMEOUT_SECONDS: "1800"
         run: |
           mkdir -p \
             "${RUNNER_TEMP}/vcpkg-restored-binary-cache" \
@@ -911,19 +944,29 @@ jobs:
           QGISPLUS_MACOS_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
         run: |
           configure_qgis() {
-            bash scripts/configure_macos_qgis.sh
+            python3 scripts/run_with_idle_timeout.py \
+              --idle-timeout 1800 -- \
+              bash scripts/configure_macos_qgis.sh
           }
 
           configured=false
           for attempt in 1 2; do
+            status=0
             if configure_qgis; then
               configured=true
               break
+            else
+              status=$?
             fi
             if (( attempt == 2 )); then
               break
             fi
-            echo "::warning::QGIS dependency configuration failed; retrying from the resumable vcpkg state"
+            if (( status == 124 )); then
+              unset X_VCPKG_ASSET_SOURCES
+              echo "::warning::QGIS configuration became idle; retrying without the vcpkg asset cache"
+            else
+              echo "::warning::QGIS dependency configuration failed; retrying from the resumable vcpkg state"
+            fi
             rm -f "${QGIS_BUILD}/CMakeCache.txt"
             rm -rf "${QGIS_BUILD}/CMakeFiles"
             sleep 10
