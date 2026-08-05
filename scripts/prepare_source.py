@@ -7,6 +7,8 @@ import argparse
 import json
 import subprocess
 import sys
+import tempfile
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -21,7 +23,14 @@ from apply_qgis_patch import (
 from resolve_versions import Release, resolve
 
 
-def _clone(repository: str, tag: str, destination: Path) -> None:
+def _clone(
+    repository: str,
+    tag: str,
+    destination: Path,
+    *,
+    max_attempts: int = 3,
+    retry_delay_seconds: int = 10,
+) -> None:
     if destination.exists():
         if not (destination / ".git").is_dir():
             raise RuntimeError(f"{destination} exists and is not a Git checkout")
@@ -37,20 +46,51 @@ def _clone(repository: str, tag: str, destination: Path) -> None:
             )
         return
 
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be positive")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            "git",
-            "clone",
-            "--depth",
-            "1",
-            "--branch",
-            tag,
-            f"https://github.com/{repository}.git",
-            str(destination),
-        ],
-        check=True,
-    )
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            # 克隆先写入临时目录，只有完整成功后才原子移动到目标位置。
+            # 网络中断不会留下 .git/shallow.lock 使后续重试永久失败。
+            with tempfile.TemporaryDirectory(
+                prefix=f".{destination.name}-clone-",
+                dir=destination.parent,
+            ) as temporary_directory:
+                checkout = Path(temporary_directory) / "checkout"
+                subprocess.run(
+                    [
+                        "git",
+                        "clone",
+                        "--depth",
+                        "1",
+                        "--branch",
+                        tag,
+                        f"https://github.com/{repository}.git",
+                        str(checkout),
+                    ],
+                    check=True,
+                )
+                if not (checkout / ".git").is_dir():
+                    raise RuntimeError(
+                        f"Clone of {repository} did not create a Git checkout"
+                    )
+                checkout.replace(destination)
+                return
+        except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+            if attempt == max_attempts:
+                raise RuntimeError(
+                    f"Unable to clone {repository} {tag} after "
+                    f"{max_attempts} attempts"
+                ) from error
+            delay = retry_delay_seconds * attempt
+            print(
+                f"Clone attempt {attempt}/{max_attempts} for {repository} "
+                f"failed; retrying in {delay}s",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
 
 
 def _pinned_release(repository: str, tag: str) -> Release:

@@ -85,6 +85,9 @@ python3 scripts/prepare_source.py --output upstream
    macOS 12 triplet、SIP 启动脚本和 Windows Fortran 配置；
 4. 写出 `upstream/versions.json`，便于审计和复现。
 
+两个浅克隆都在临时目录中最多重试三次，完整成功后才移动到目标路径；网络中断
+不会在正式源码目录留下 `.git/shallow.lock`，导致同一次 Runner 重试无法恢复。
+
 如果未来 QGIS 修改了相关初始化代码，补丁会明确失败，而不会模糊匹配后
 继续生成一个默认样式失效的安装包。
 
@@ -183,8 +186,18 @@ Windows 与 macOS 都把直接依赖拆为 `base`、`geo`、`python`、`qt` 四�
 下载超时才自动绕过该缓存并改从上游权威源下载。
 
 Windows 看门狗显式使用 `actions/setup-python` 提供的 `python.exe`，并在正式
-配置前验证其路径和版本；不调用可能被系统解析为 WSL 启动入口的 `python3.exe`
-别名。macOS 继续使用 `python3`。
+配置前验证其路径和版本。由原生 Python 启动的 Bash 同样固定为当前 Git Bash
+经过 `cygpath` 转换后的 Windows 绝对路径；不使用可能被系统解析为 WSL 启动器
+的裸 `python3` 或 `bash` 命令。macOS 继续使用系统 shell 与 `python3`。
+
+正式依赖矩阵启动前，独立的 Windows 环境 smoke Job 会实际执行完整的
+`Git Bash → python.exe → Git Bash → shell script` 进程链。启动器、路径转换或
+脚本语法异常会在约一分钟内失败并取消工作流，不再等依赖编译数小时后才暴露。
+
+macOS Intel 与 Apple Silicon 也分别运行轻量环境 smoke Job：核对 Runner 架构，
+用当前 Xcode 编译一个最低系统版本为 macOS 12 的 Mach-O，再通过 `vtool` 读取
+结果确认部署目标。同时显式安装 `gcc@15`，使用 `brew --prefix` 的稳定路径配置
+gfortran，不依赖 Hosted Runner 恰好预装的版本或 Homebrew Cellar 内部布局。
 
 对于已经由构建日志和 PyPI 元数据确认的上游 Python 端口缺陷，工程使用受
 registry baseline 保护的 overlay 显式修复依赖图：`py-libpysal` 补充
@@ -196,6 +209,8 @@ registry baseline 保护的 overlay 显式修复依赖图：`py-libpysal` 补充
 使用仅限 Actions 的 `GITHUB_TOKEN` 取消整个运行。因此一个平台已经确认失败
 后，其他 Windows/macOS Runner 不会继续占用数小时。失败 Job 会先上传其部分
 依赖缓存或诊断文件，再发出全局取消请求，避免取消动作本身丢失排错与续跑材料。
+Windows EXE 与两个架构的 DMG 必须全部存在且非空，Release Job 才会发布；发布
+附件同时生成 `SHA256SUMS.txt`。DMG 在上传前还会执行 `hdiutil verify` 完整性检查。
 
 ### 离线依赖审计与正式编译
 

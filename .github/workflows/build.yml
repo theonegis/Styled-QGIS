@@ -45,9 +45,93 @@ jobs:
       - name: Show selected versions
         run: cat versions.json
 
+  windows_environment:
+    name: Validate Windows process launchers
+    needs: versions
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+
+      - name: Verify native Python can launch Git Bash
+        shell: bash
+        run: |
+          watchdog_python="$(command -v python)"
+          watchdog_bash="$(cygpath -w "${BASH}")"
+          echo "Watchdog Python: ${watchdog_python}"
+          echo "Git Bash: ${watchdog_bash}"
+          "${watchdog_python}" --version
+          # OSTYPE intentionally belongs to the child Git Bash.
+          # shellcheck disable=SC2016
+          "${watchdog_python}" scripts/run_with_idle_timeout.py \
+            --idle-timeout 30 -- \
+            "${watchdog_bash}" -c \
+            'case "${OSTYPE}" in msys*) echo "Git Bash child OK" ;; *) exit 1 ;; esac'
+          "${watchdog_python}" scripts/run_with_idle_timeout.py \
+            --idle-timeout 30 -- \
+            "${watchdog_bash}" -n scripts/configure_windows_qgis.sh
+
+      - name: Cancel the entire workflow after an environment failure
+        if: ${{ failure() && !cancelled() }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/cancel_workflow.sh
+
+  macos_environment:
+    name: Validate macOS ${{ matrix.name }} toolchain
+    needs: versions
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: Intel
+            os: macos-15-intel
+            arch: x86_64
+          - name: Apple-Silicon
+            os: macos-15
+            arch: arm64
+    env:
+      GCC_VERSION: "15"
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate architecture and Monterey compiler target
+        run: |
+          test "$(uname -m)" = "${{ matrix.arch }}"
+          smoke_root="$(mktemp -d "${RUNNER_TEMP}/qgisplus-toolchain.XXXXXX")"
+          trap 'rm -rf "${smoke_root}"' EXIT
+          printf '%s\n' 'int main() { return 0; }' > "${smoke_root}/main.cpp"
+          xcrun clang++ \
+            -arch "${{ matrix.arch }}" \
+            -mmacosx-version-min="${MACOSX_DEPLOYMENT_TARGET}" \
+            "${smoke_root}/main.cpp" \
+            -o "${smoke_root}/smoke"
+          min_os="$(xcrun vtool -show-build "${smoke_root}/smoke" | \
+            awk '$1 == "minos" { print $2; exit }')"
+          test "${min_os}" = "${MACOSX_DEPLOYMENT_TARGET}"
+
+      - name: Validate pinned gfortran toolchain
+        run: |
+          brew install "gcc@${GCC_VERSION}"
+          bash scripts/configure_macos_toolchain.sh
+
+      - name: Cancel the entire workflow after an environment failure
+        if: ${{ failure() && !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/cancel_workflow.sh
+
   windows_dependencies:
     name: Build fresh Windows dependencies (${{ matrix.shard }})
-    needs: versions
+    needs: [versions, windows_environment]
     runs-on: windows-2022
     timeout-minutes: 350
     strategy:
@@ -387,14 +471,16 @@ jobs:
           X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
         run: |
           watchdog_python="$(command -v python)"
+          watchdog_bash="$(cygpath -w "${BASH}")"
           echo "Using watchdog Python: ${watchdog_python}"
+          echo "Using Git Bash: ${watchdog_bash}"
           "${watchdog_python}" --version
 
           configure_qgis() {
             "${watchdog_python}" scripts/run_with_idle_timeout.py \
               --idle-timeout 7200 \
               --asset-cache-idle-timeout 900 -- \
-              bash scripts/configure_windows_qgis.sh
+              "${watchdog_bash}" scripts/configure_windows_qgis.sh
           }
 
           configured=false
@@ -477,13 +563,6 @@ jobs:
           ).Sum
           Write-Host "Staged runtime size: $runtimeSize bytes"
 
-      - name: Cancel the entire workflow after a Windows build failure
-        if: ${{ failure() && !cancelled() }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/cancel_workflow.sh
-
       - name: Upload staged Windows runtime
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -493,6 +572,13 @@ jobs:
           include-hidden-files: true
           compression-level: 6
           retention-days: 3
+
+      - name: Cancel the entire workflow after a Windows build failure
+        if: ${{ failure() && !cancelled() }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/cancel_workflow.sh
 
   windows_package:
     name: Package and test Windows x64 installer
@@ -623,13 +709,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Cancel the entire workflow after a packaging failure
-        if: ${{ failure() && !cancelled() }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/cancel_workflow.sh
-
       - name: Upload Windows installer
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -638,10 +717,17 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+      - name: Cancel the entire workflow after a packaging failure
+        if: ${{ failure() && !cancelled() }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/cancel_workflow.sh
+
   macos_dependencies:
     name: >-
       Build fresh macOS ${{ matrix.name }} dependencies (${{ matrix.shard }})
-    needs: versions
+    needs: [versions, macos_environment]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 350
     strategy:
@@ -727,10 +813,12 @@ jobs:
         run: |
           brew untap aws/tap || true
           brew install automake bison flex gnu-sed autoconf-archive \
-            nasm libtool fdupes swig mono
-          echo "$(brew --prefix bison)/bin" >> "${GITHUB_PATH}"
-          echo "$(brew --prefix flex)/bin" >> "${GITHUB_PATH}"
-          echo "$(brew --prefix libtool)/bin" >> "${GITHUB_PATH}"
+            nasm libtool fdupes swig mono "gcc@${GCC_VERSION}"
+          {
+            echo "$(brew --prefix bison)/bin"
+            echo "$(brew --prefix flex)/bin"
+            echo "$(brew --prefix libtool)/bin"
+          } >> "${GITHUB_PATH}"
 
       - name: Install CMake and Ninja
         uses: lukka/get-cmake@f5b8fbb4d77cec1acc5a5f9f0df4beffaf5d98d9
@@ -741,17 +829,7 @@ jobs:
         run: bash scripts/setup_macos_vcpkg.sh
 
       - name: Configure gfortran
-        run: |
-          if [[ "${{ matrix.arch }}" == "arm64" ]]; then
-            sudo ln -fs "/opt/homebrew/bin/gfortran-${GCC_VERSION}" /usr/local/bin/gfortran
-            GCC_PREFIX=/opt/homebrew
-          else
-            sudo ln -fs "/usr/local/bin/gfortran-${GCC_VERSION}" /usr/local/bin/gfortran
-            GCC_PREFIX=/usr/local
-          fi
-          sudo mkdir -p /usr/local/gfortran
-          sudo ln -sf "${GCC_PREFIX}"/Cellar/gcc@${GCC_VERSION}/*/lib/gcc/${GCC_VERSION} \
-            /usr/local/gfortran/lib
+        run: bash scripts/configure_macos_toolchain.sh
 
       - name: Prepare locked dependency shard
         run: |
@@ -895,10 +973,12 @@ jobs:
         run: |
           brew untap aws/tap || true
           brew install automake bison flex gnu-sed autoconf-archive \
-            nasm libtool fdupes swig mono
-          echo "$(brew --prefix bison)/bin" >> "${GITHUB_PATH}"
-          echo "$(brew --prefix flex)/bin" >> "${GITHUB_PATH}"
-          echo "$(brew --prefix libtool)/bin" >> "${GITHUB_PATH}"
+            nasm libtool fdupes swig mono "gcc@${GCC_VERSION}"
+          {
+            echo "$(brew --prefix bison)/bin"
+            echo "$(brew --prefix flex)/bin"
+            echo "$(brew --prefix libtool)/bin"
+          } >> "${GITHUB_PATH}"
 
       - name: Install CMake and Ninja
         uses: lukka/get-cmake@f5b8fbb4d77cec1acc5a5f9f0df4beffaf5d98d9
@@ -909,17 +989,7 @@ jobs:
         run: bash scripts/setup_macos_vcpkg.sh
 
       - name: Configure gfortran
-        run: |
-          if [[ "${{ matrix.arch }}" == "arm64" ]]; then
-            sudo ln -fs "/opt/homebrew/bin/gfortran-${GCC_VERSION}" /usr/local/bin/gfortran
-            GCC_PREFIX=/opt/homebrew
-          else
-            sudo ln -fs "/usr/local/bin/gfortran-${GCC_VERSION}" /usr/local/bin/gfortran
-            GCC_PREFIX=/usr/local
-          fi
-          sudo mkdir -p /usr/local/gfortran
-          sudo ln -sf "${GCC_PREFIX}"/Cellar/gcc@${GCC_VERSION}/*/lib/gcc/${GCC_VERSION} \
-            /usr/local/gfortran/lib
+        run: bash scripts/configure_macos_toolchain.sh
 
       - name: Download this run's macOS dependency archives
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -1027,12 +1097,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Cancel the entire workflow after a macOS build failure
-        if: ${{ failure() && !cancelled() }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/cancel_workflow.sh
-
       - name: Create architecture-specific DMG
         run: |
           APP_PATH="$(find "${QGIS_BUILD}/_CPack_Packages/Darwin/External" \
@@ -1044,6 +1108,8 @@ jobs:
             -srcfolder "${APP_PATH}" \
             -ov -format UDZO \
             "dist/QGISPlus-${{ needs.versions.outputs.qgis_version }}-macos-${{ matrix.artifact_arch }}.dmg"
+          hdiutil verify \
+            "dist/QGISPlus-${{ needs.versions.outputs.qgis_version }}-macos-${{ matrix.artifact_arch }}.dmg"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -1051,6 +1117,12 @@ jobs:
           path: dist/*.dmg
           if-no-files-found: error
           compression-level: 0
+
+      - name: Cancel the entire workflow after a macOS build failure
+        if: ${{ failure() && !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/cancel_workflow.sh
 
   release:
     name: Publish tagged build
@@ -1063,6 +1135,31 @@ jobs:
           pattern: QGISPlus-${{ needs.versions.outputs.qgis_version }}-*
           path: dist
           merge-multiple: true
+      - name: Verify complete release payload
+        env:
+          QGIS_VERSION: ${{ needs.versions.outputs.qgis_version }}
+        run: |
+          expected=(
+            "QGISPlus-${QGIS_VERSION}-windows-x64-setup.exe"
+            "QGISPlus-${QGIS_VERSION}-macos-intel.dmg"
+            "QGISPlus-${QGIS_VERSION}-macos-arm64.dmg"
+          )
+          for package in "${expected[@]}"; do
+            test -s "dist/${package}" || {
+              echo "Missing or empty release package: ${package}" >&2
+              exit 1
+            }
+          done
+          actual_count="$(find dist -maxdepth 1 -type f | wc -l | tr -d ' ')"
+          test "${actual_count}" -eq "${#expected[@]}" || {
+            echo "Expected ${#expected[@]} packages, found ${actual_count}" >&2
+            find dist -maxdepth 1 -type f -print >&2
+            exit 1
+          }
+          (
+            cd dist
+            sha256sum "${expected[@]}" > SHA256SUMS.txt
+          )
       - name: Create release and upload packages
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

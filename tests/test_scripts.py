@@ -11,6 +11,7 @@ import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from unittest import mock
 
 import sys
 
@@ -29,6 +30,7 @@ from apply_qgis_patch import (
 )
 from audit_python_runtime_dependencies import _load_ports, audit
 from prepare_ifw_package import PACKAGE_ID, prepare_ifw_package
+from prepare_source import _clone
 from prepare_vcpkg_shard import (
     SHARDS,
     create_shard_manifest,
@@ -39,6 +41,43 @@ from resolve_versions import (
     _qgis_version_from_build_tag,
     _select_release,
 )
+
+
+class SourcePreparationTests(unittest.TestCase):
+    def test_clone_retries_without_leaving_a_partial_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "QGIS"
+            attempts = 0
+
+            def fake_clone(command: list[str], *, check: bool) -> None:
+                nonlocal attempts
+                self.assertTrue(check)
+                attempts += 1
+                checkout = Path(command[-1])
+                if attempts == 1:
+                    (checkout / ".git").mkdir(parents=True)
+                    (checkout / ".git/shallow.lock").touch()
+                    raise subprocess.CalledProcessError(128, command)
+                (checkout / ".git").mkdir(parents=True)
+                (checkout / "CMakeLists.txt").write_text(
+                    "project(QGIS)\n", encoding="utf-8"
+                )
+
+            with mock.patch(
+                "prepare_source.subprocess.run", side_effect=fake_clone
+            ), mock.patch("prepare_source.time.sleep") as sleep:
+                _clone(
+                    "qgis/QGIS",
+                    "final-4_2_1",
+                    destination,
+                    retry_delay_seconds=0,
+                )
+
+            self.assertEqual(attempts, 2)
+            sleep.assert_called_once_with(0)
+            self.assertTrue((destination / ".git").is_dir())
+            self.assertTrue((destination / "CMakeLists.txt").is_file())
+            self.assertFalse((destination / ".git/shallow.lock").exists())
 
 
 class VcpkgShardTests(unittest.TestCase):
@@ -655,13 +694,29 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertIn("actions: write", workflow)
         self.assertNotIn("fail-fast: false", workflow)
-        self.assertEqual(workflow.count("fail-fast: true"), 3)
+        self.assertEqual(workflow.count("fail-fast: true"), 4)
         self.assertGreaterEqual(
             workflow.count("run: bash scripts/cancel_workflow.sh"), 5
         )
         self.assertIn("failure() && !cancelled()", workflow)
         self.assertIn(
             'actions/runs/${GITHUB_RUN_ID}/cancel', cancellation_script
+        )
+
+        windows_environment = workflow.split(
+            "  windows_environment:", 1
+        )[1].split("  macos_environment:", 1)[0]
+        self.assertIn(
+            "Cancel the entire workflow after an environment failure",
+            windows_environment,
+        )
+
+        macos_environment = workflow.split(
+            "  macos_environment:", 1
+        )[1].split("  windows_dependencies:", 1)[0]
+        self.assertIn(
+            "Cancel the entire workflow after an environment failure",
+            macos_environment,
         )
 
         windows_dependencies = workflow.split(
@@ -672,6 +727,9 @@ class WorkflowTests(unittest.TestCase):
         )[1].split("  macos:", 1)[0]
         windows_package = workflow.split("  windows_package:", 1)[1].split(
             "  macos_dependencies:", 1
+        )[0]
+        windows_build = workflow.split("  windows_build:", 1)[1].split(
+            "  windows_package:", 1
         )[0]
         macos_build = workflow.split("  macos:", 1)[1].split(
             "  release:", 1
@@ -693,13 +751,31 @@ class WorkflowTests(unittest.TestCase):
             ),
         )
         self.assertLess(
+            windows_build.index("Upload staged Windows runtime"),
+            windows_build.index(
+                "Cancel the entire workflow after a Windows build failure"
+            ),
+        )
+        self.assertLess(
             windows_package.index("Upload QtIFW diagnostics"),
             windows_package.index(
                 "Cancel the entire workflow after a packaging failure"
             ),
         )
         self.assertLess(
+            windows_package.index("Upload Windows installer"),
+            windows_package.index(
+                "Cancel the entire workflow after a packaging failure"
+            ),
+        )
+        self.assertLess(
             macos_build.index("Upload macOS verification diagnostics"),
+            macos_build.index(
+                "Cancel the entire workflow after a macOS build failure"
+            ),
+        )
+        self.assertLess(
+            macos_build.index("path: dist/*.dmg"),
             macos_build.index(
                 "Cancel the entire workflow after a macOS build failure"
             ),
@@ -896,11 +972,24 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(windows_jobs.count('"TMPDIR=$tempRoot"'), 2)
         self.assertEqual(windows_jobs.count("$workDrive -ne $tempDrive"), 2)
         self.assertIn('${QGIS_SOURCE}/vcpkg/vcpkg.json', windows_jobs)
+        self.assertIn(
+            "needs: [versions, windows_environment]", windows_jobs
+        )
         self.assertIn("needs: [versions, windows_dependencies]", windows_build)
         self.assertIn("run_with_idle_timeout.py", windows_build)
         self.assertIn('watchdog_python="$(command -v python)"', windows_build)
+        self.assertIn(
+            'watchdog_bash="$(cygpath -w "${BASH}")"', windows_build
+        )
         self.assertNotIn("python3 scripts/run_with_idle_timeout.py", windows_build)
-        self.assertIn("bash scripts/configure_windows_qgis.sh", windows_build)
+        self.assertIn(
+            '"${watchdog_bash}" scripts/configure_windows_qgis.sh',
+            windows_build,
+        )
+        self.assertNotIn(
+            "              bash scripts/configure_windows_qgis.sh",
+            windows_build,
+        )
         self.assertIn("retrying without the vcpkg asset cache", windows_build)
         self.assertNotIn(
             "uses: ./upstream/QGIS/.github/actions/setup-vcpkg",
@@ -928,6 +1017,22 @@ class WorkflowTests(unittest.TestCase):
         )[0]
         self.assertNotIn("continue-on-error: true", dependency_build_step)
         self.assertNotIn("Save completed Windows dependency cache", windows_build)
+
+    def test_windows_launcher_smoke_precedes_expensive_jobs(self) -> None:
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github/workflows/build.yml"
+        ).read_text(encoding="utf-8")
+        smoke = workflow.split("  windows_environment:", 1)[1].split(
+            "  windows_dependencies:", 1
+        )[0]
+
+        self.assertIn("timeout-minutes: 10", smoke)
+        self.assertIn('watchdog_python="$(command -v python)"', smoke)
+        self.assertIn('watchdog_bash="$(cygpath -w "${BASH}")"', smoke)
+        self.assertIn("run_with_idle_timeout.py", smoke)
+        self.assertIn("Git Bash child OK", smoke)
+        self.assertIn("-n scripts/configure_windows_qgis.sh", smoke)
 
     def test_macos_vcpkg_uses_fresh_run_local_shards(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -1030,6 +1135,9 @@ class WorkflowTests(unittest.TestCase):
             "  release:", 1
         )[0]
 
+        self.assertIn(
+            "needs: [versions, macos_environment]", dependency_job
+        )
         self.assertIn("needs: [versions, macos_dependencies]", macos_job)
         dependency_build_step = dependency_job.split(
             "- name: Build dependency shard from source", 1
@@ -1083,6 +1191,7 @@ class WorkflowTests(unittest.TestCase):
             'export MACOSX_DEPLOYMENT_TARGET=', configure_script
         )
         self.assertIn("-D WITH_ORACLE=OFF", configure_script)
+        self.assertIn("-D ENABLE_TESTS=OFF", configure_script)
         self.assertNotIn("--feature oracle", workflow)
         self.assertIn(
             "MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}",
@@ -1110,6 +1219,29 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("min_major > max_major", verification_script)
         self.assertIn("macho_count == 0", verification_script)
         self.assertNotIn("deployment_command = (\n", verification_script)
+        self.assertIn("hdiutil verify", macos_job)
+
+        macos_environment = workflow.split(
+            "  macos_environment:", 1
+        )[1].split("  windows_dependencies:", 1)[0]
+        self.assertIn("Validate macOS ${{ matrix.name }} toolchain", macos_environment)
+        self.assertIn("name: Intel", macos_environment)
+        self.assertIn("name: Apple-Silicon", macos_environment)
+        self.assertIn('MACOSX_DEPLOYMENT_TARGET: "12.0"', macos_environment)
+        self.assertIn("xcrun clang++", macos_environment)
+        self.assertIn("xcrun vtool -show-build", macos_environment)
+        self.assertIn(
+            "bash scripts/configure_macos_toolchain.sh", macos_environment
+        )
+
+        toolchain_script = (
+            root / "scripts/configure_macos_toolchain.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn('brew --prefix "${formula}"', toolchain_script)
+        self.assertIn(
+            'sudo ln -sfn "${gfortran_executable}"', toolchain_script
+        )
+        self.assertNotIn("/Cellar/", toolchain_script)
 
         syntax_check = subprocess.run(
             ["bash", "-n", str(root / "scripts/verify_macos_bundle.sh")],
@@ -1179,6 +1311,21 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Inspected 2 Mach-O files", result.stdout)
         self.assertIn("macOS bundle verification passed", result.stdout)
+
+    def test_release_requires_all_platform_packages_and_checksums(self) -> None:
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github/workflows/build.yml"
+        ).read_text(encoding="utf-8")
+        release_job = workflow.split("  release:", 1)[1]
+
+        self.assertIn("Verify complete release payload", release_job)
+        self.assertIn("windows-x64-setup.exe", release_job)
+        self.assertIn("macos-intel.dmg", release_job)
+        self.assertIn("macos-arm64.dmg", release_job)
+        self.assertIn('test -s "dist/${package}"', release_job)
+        self.assertIn("sha256sum", release_job)
+        self.assertIn("SHA256SUMS.txt", release_job)
 
 
 class VersionResolverTests(unittest.TestCase):
