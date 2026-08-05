@@ -193,6 +193,8 @@ Windows 看门狗显式使用 `actions/setup-python` 提供的 `python.exe`，�
 正式依赖矩阵启动前，独立的 Windows 环境 smoke Job 会实际执行完整的
 `Git Bash → python.exe → Git Bash → shell script` 进程链。启动器、路径转换或
 脚本语法异常会在约一分钟内失败并取消工作流，不再等依赖编译数小时后才暴露。
+子进程通过 Bash 自身的 `BASH_VERSION` 确认，不依赖 `OSTYPE`、`MSYSTEM` 等
+可能随 Runner 环境变化的平台字符串。
 
 macOS Intel 与 Apple Silicon 也分别运行轻量环境 smoke Job：核对 Runner 架构，
 用当前 Xcode 编译一个最低系统版本为 macOS 12 的 Mach-O，再通过 `vtool` 读取

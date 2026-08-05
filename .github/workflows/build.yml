@@ -65,12 +65,12 @@ jobs:
           echo "Watchdog Python: ${watchdog_python}"
           echo "Git Bash: ${watchdog_bash}"
           "${watchdog_python}" --version
-          # OSTYPE intentionally belongs to the child Git Bash.
+          # BASH_VERSION intentionally belongs to the child Git Bash.
           # shellcheck disable=SC2016
           "${watchdog_python}" scripts/run_with_idle_timeout.py \
             --idle-timeout 30 -- \
             "${watchdog_bash}" -c \
-            'case "${OSTYPE}" in msys*) echo "Git Bash child OK" ;; *) exit 1 ;; esac'
+            'test -n "${BASH_VERSION}" && printf "%s\n" "Git Bash child OK"'
           "${watchdog_python}" scripts/run_with_idle_timeout.py \
             --idle-timeout 30 -- \
             "${watchdog_bash}" -n scripts/configure_windows_qgis.sh

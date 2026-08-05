@@ -1031,7 +1031,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('watchdog_python="$(command -v python)"', smoke)
         self.assertIn('watchdog_bash="$(cygpath -w "${BASH}")"', smoke)
         self.assertIn("run_with_idle_timeout.py", smoke)
+        self.assertIn("BASH_VERSION", smoke)
         self.assertIn("Git Bash child OK", smoke)
+        self.assertNotIn("OSTYPE", smoke)
         self.assertIn("-n scripts/configure_windows_qgis.sh", smoke)
 
     def test_macos_vcpkg_uses_fresh_run_local_shards(self) -> None:
