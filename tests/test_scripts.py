@@ -48,11 +48,13 @@ class SourcePreparationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / "QGIS"
             attempts = 0
+            clone_commands: list[list[str]] = []
 
             def fake_clone(command: list[str], *, check: bool) -> None:
                 nonlocal attempts
                 self.assertTrue(check)
                 attempts += 1
+                clone_commands.append(command)
                 checkout = Path(command[-1])
                 if attempts == 1:
                     (checkout / ".git").mkdir(parents=True)
@@ -78,6 +80,12 @@ class SourcePreparationTests(unittest.TestCase):
             self.assertTrue((destination / ".git").is_dir())
             self.assertTrue((destination / "CMakeLists.txt").is_file())
             self.assertFalse((destination / ".git/shallow.lock").exists())
+            self.assertTrue(clone_commands)
+            for command in clone_commands:
+                self.assertEqual(
+                    command[:4],
+                    ["git", "-c", "core.longpaths=true", "clone"],
+                )
 
 
 class VcpkgShardTests(unittest.TestCase):
@@ -971,6 +979,18 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(windows_jobs.count('"TMP=$tempRoot"'), 2)
         self.assertEqual(windows_jobs.count('"TMPDIR=$tempRoot"'), 2)
         self.assertEqual(windows_jobs.count("$workDrive -ne $tempDrive"), 2)
+        self.assertEqual(windows_jobs.count("UPSTREAM_ROOT: D:/u"), 2)
+        self.assertEqual(windows_jobs.count("QGIS_SOURCE: D:/u/QGIS"), 2)
+        self.assertEqual(
+            windows_jobs.count('--output "${UPSTREAM_ROOT}"'),
+            2,
+        )
+        self.assertIn("QGIS_BUILD: D:/b/qgis", windows_build)
+        self.assertIn("STYLE_BUILD: D:/b/style", windows_build)
+        self.assertNotIn(
+            "${{ github.workspace }}/upstream/QGIS",
+            windows_jobs,
+        )
         self.assertIn('${QGIS_SOURCE}/vcpkg/vcpkg.json', windows_jobs)
         self.assertIn(
             "needs: [versions, windows_environment]", windows_jobs

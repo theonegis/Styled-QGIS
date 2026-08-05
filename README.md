@@ -165,9 +165,11 @@ QLEMENTINE_TAG=v1.4.2 ./scripts/build_style.sh
 地在单个 GitHub-hosted runner 时限内完成，因此 Windows 使用三阶段流水线：
 依赖预热、QGIS 正式编译、QtIFW 打包。预热阶段即使达到时间上限，也会保存
 已经完成的二进制包；正式编译阶段在同一次工作流中自动恢复并继续，不再要求
-用户手动重跑。Windows 的源码、vcpkg、Python `TEMP/TMP` 和缓存统一位于
-runner 的 `D:` 工作盘，避免 Python Versioneer 跨盘计算相对路径失败。如果
-安装器阶段失败，可以仅重跑失败的打包 Job，复用同一次运行已上传的暂存运行时。
+用户手动重跑。Windows 的源码、vcpkg、Python `TEMP/TMP` 和缓存统一位于 runner
+的 `D:` 工作盘，避免 Python Versioneer 跨盘计算相对路径失败。QGIS 源码固定使用
+短路径 `D:/u`，构建目录使用 `D:/b`，同时所有上游 Git 克隆显式启用
+`core.longpaths=true`，以兼容 QGIS 测试数据中的超长文件名。如果安装器阶段失败，
+可以仅重跑失败的打包 Job，复用同一次运行已上传的暂存运行时。
 
 Windows 与 macOS 都把直接依赖拆为 `base`、`geo`、`python`、`qt` 四个并行
 分片。分片内的 vcpkg 安装会在保留现有 buildtree 和二进制缓存的前提下最多

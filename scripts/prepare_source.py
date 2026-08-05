@@ -62,6 +62,8 @@ def _clone(
                 subprocess.run(
                     [
                         "git",
+                        "-c",
+                        "core.longpaths=true",
                         "clone",
                         "--depth",
                         "1",

@@ -139,7 +139,10 @@ jobs:
       matrix:
         shard: [base, geo, python, qt]
     env:
-      QGIS_SOURCE: ${{ github.workspace }}/upstream/QGIS
+      # QGIS 的测试基准文件名很长；使用盘符根目录附近的源码路径，避免
+      # Windows checkout 和后续 vcpkg/CMake 路径超过 Win32 限制。
+      UPSTREAM_ROOT: D:/u
+      QGIS_SOURCE: D:/u/QGIS
       VCPKG_BINARY_CACHE_ROOT: D:/vcpkg-binary-cache
       VCPKG_RESTORED_BINARY_CACHE_ROOT: D:/vcpkg-restored-binary-cache
       VCPKG_INSTALL_ROOT: D:/vcpkg-installed
@@ -169,7 +172,7 @@ jobs:
         shell: bash
         run: >-
           python scripts/prepare_source.py
-          --output upstream
+          --output "${UPSTREAM_ROOT}"
           --qgis-tag "${{ needs.versions.outputs.qgis_tag }}"
           --qlementine-tag "${{ needs.versions.outputs.qlementine_tag }}"
 
@@ -331,10 +334,11 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 350
     env:
-      QGIS_SOURCE: ${{ github.workspace }}/upstream/QGIS
-      QLEMENTINE_SOURCE: ${{ github.workspace }}/upstream/qlementine
-      QGIS_BUILD: ${{ github.workspace }}/upstream/QGIS/build
-      STYLE_BUILD: ${{ github.workspace }}/style-build
+      UPSTREAM_ROOT: D:/u
+      QGIS_SOURCE: D:/u/QGIS
+      QLEMENTINE_SOURCE: D:/u/qlementine
+      QGIS_BUILD: D:/b/qgis
+      STYLE_BUILD: D:/b/style
       QGIS_RUNTIME: D:/qgisplus-runtime
       VCPKG_BINARY_CACHE_ROOT: D:/vcpkg-binary-cache
       VCPKG_TRIPLET: x64-windows-release
@@ -361,7 +365,7 @@ jobs:
         shell: bash
         run: >-
           python scripts/prepare_source.py
-          --output upstream
+          --output "${UPSTREAM_ROOT}"
           --qgis-tag "${{ needs.versions.outputs.qgis_tag }}"
           --qlementine-tag "${{ needs.versions.outputs.qlementine_tag }}"
 
