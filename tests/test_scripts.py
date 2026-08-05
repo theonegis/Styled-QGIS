@@ -869,6 +869,7 @@ class WorkflowTests(unittest.TestCase):
             'VCPKG_ASSET_CACHE_IDLE_TIMEOUT_SECONDS: "900"',
             windows_jobs,
         )
+        self.assertIn("VCPKG_WATCHDOG_PYTHON: python", windows_jobs)
         self.assertIn(
             'VCPKG_BUILDTREES_ROOT_TO_RESET="${VCPKG_BUILDTREES_ROOT}"',
             windows_jobs,
@@ -897,6 +898,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('${QGIS_SOURCE}/vcpkg/vcpkg.json', windows_jobs)
         self.assertIn("needs: [versions, windows_dependencies]", windows_build)
         self.assertIn("run_with_idle_timeout.py", windows_build)
+        self.assertIn('watchdog_python="$(command -v python)"', windows_build)
+        self.assertNotIn("python3 scripts/run_with_idle_timeout.py", windows_build)
         self.assertIn("bash scripts/configure_windows_qgis.sh", windows_build)
         self.assertIn("retrying without the vcpkg asset cache", windows_build)
         self.assertNotIn(

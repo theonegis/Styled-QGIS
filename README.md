@@ -182,6 +182,10 @@ Windows 与 macOS 都把直接依赖拆为 `base`、`geo`、`python`、`qt` 四�
 数小时上限。重试会保留已经生成的 binary cache 和 buildtree；只有 asset cache
 下载超时才自动绕过该缓存并改从上游权威源下载。
 
+Windows 看门狗显式使用 `actions/setup-python` 提供的 `python.exe`，并在正式
+配置前验证其路径和版本；不调用可能被系统解析为 WSL 启动入口的 `python3.exe`
+别名。macOS 继续使用 `python3`。
+
 对于已经由构建日志和 PyPI 元数据确认的上游 Python 端口缺陷，工程使用受
 registry baseline 保护的 overlay 显式修复依赖图：`py-libpysal` 补充
 `py-beautifulsoup4`，`py-referencing` 补充 `py-typing-extensions`，

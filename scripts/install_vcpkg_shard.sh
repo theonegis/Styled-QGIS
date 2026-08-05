@@ -15,6 +15,7 @@ install_root="${VCPKG_INSTALL_ROOT_TO_RESET:-}"
 buildtrees_root="${VCPKG_BUILDTREES_ROOT_TO_RESET:-}"
 idle_timeout="${VCPKG_IDLE_TIMEOUT_SECONDS:-0}"
 asset_cache_idle_timeout="${VCPKG_ASSET_CACHE_IDLE_TIMEOUT_SECONDS:-0}"
+watchdog_python="${VCPKG_WATCHDOG_PYTHON:-python3}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ ! "$max_attempts" =~ ^[1-9][0-9]*$ ]]; then
@@ -36,13 +37,17 @@ fi
 
 run_install() {
     if (( idle_timeout > 0 )); then
+        if ! command -v "$watchdog_python" >/dev/null 2>&1; then
+            echo "Watchdog Python executable not found: ${watchdog_python}" >&2
+            return 2
+        fi
         watchdog_arguments=(--idle-timeout "$idle_timeout")
         if (( asset_cache_idle_timeout > 0 )); then
             watchdog_arguments+=(
                 --asset-cache-idle-timeout "$asset_cache_idle_timeout"
             )
         fi
-        python3 "${script_dir}/run_with_idle_timeout.py" \
+        "$watchdog_python" "${script_dir}/run_with_idle_timeout.py" \
             "${watchdog_arguments[@]}" -- "$@"
     else
         "$@"

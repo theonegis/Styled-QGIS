@@ -193,6 +193,7 @@ jobs:
           VCPKG_INSTALL_ROOT_TO_RESET: D:/vcpkg-installed
           VCPKG_IDLE_TIMEOUT_SECONDS: "7200"
           VCPKG_ASSET_CACHE_IDLE_TIMEOUT_SECONDS: "900"
+          VCPKG_WATCHDOG_PYTHON: python
         run: |
           mkdir -p \
             "${VCPKG_RESTORED_BINARY_CACHE_ROOT}" \
@@ -385,8 +386,12 @@ jobs:
         env:
           X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
         run: |
+          watchdog_python="$(command -v python)"
+          echo "Using watchdog Python: ${watchdog_python}"
+          "${watchdog_python}" --version
+
           configure_qgis() {
-            python3 scripts/run_with_idle_timeout.py \
+            "${watchdog_python}" scripts/run_with_idle_timeout.py \
               --idle-timeout 7200 \
               --asset-cache-idle-timeout 900 -- \
               bash scripts/configure_windows_qgis.sh
