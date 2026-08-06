@@ -2,6 +2,32 @@ name: Build QGIS+
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: >-
+          Optional release tag to create after all selected/reused packages pass
+        required: false
+        type: string
+      reuse_run_id:
+        description: >-
+          Completed run ID supplying packages for platforms disabled below
+        required: false
+        type: string
+      build_windows:
+        description: Build Windows x64 instead of reusing its package
+        required: true
+        default: true
+        type: boolean
+      build_macos_intel:
+        description: Build macOS Intel instead of reusing its package
+        required: true
+        default: true
+        type: boolean
+      build_macos_arm64:
+        description: Build macOS Apple Silicon instead of reusing its package
+        required: true
+        default: true
+        type: boolean
   push:
     tags:
       - "v*"
@@ -26,6 +52,18 @@ jobs:
       qgis_version: ${{ steps.releases.outputs.qgis_version }}
       qlementine_tag: ${{ steps.releases.outputs.qlementine_tag }}
       qlementine_version: ${{ steps.releases.outputs.qlementine_version }}
+      release_tag: ${{ steps.releases.outputs.release_tag }}
+      reuse_run_id: ${{ steps.build_plan.outputs.reuse_run_id }}
+      build_windows: ${{ steps.build_plan.outputs.build_windows }}
+      build_macos: ${{ steps.build_plan.outputs.build_macos }}
+      build_macos_intel: ${{ steps.build_plan.outputs.build_macos_intel }}
+      build_macos_arm64: ${{ steps.build_plan.outputs.build_macos_arm64 }}
+      reuse_windows: ${{ steps.build_plan.outputs.reuse_windows }}
+      reuse_macos_intel: ${{ steps.build_plan.outputs.reuse_macos_intel }}
+      reuse_macos_arm64: ${{ steps.build_plan.outputs.reuse_macos_arm64 }}
+      macos_matrix: ${{ steps.build_plan.outputs.macos_matrix }}
+      macos_dependency_matrix: >-
+        ${{ steps.build_plan.outputs.macos_dependency_matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
@@ -35,19 +73,86 @@ jobs:
         id: releases
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BUILD_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          BUILD_TAG: >-
+            ${{ github.ref_type == 'tag' && github.ref_name ||
+                inputs.release_tag || '' }}
+        run: |
+          python scripts/resolve_versions.py \
+            --output versions.json \
+            --build-tag "${BUILD_TAG}"
+          echo "release_tag=${BUILD_TAG}" >> "${GITHUB_OUTPUT}"
+      - name: Resolve platform build and reuse plan
+        id: build_plan
+        env:
+          REUSE_RUN_ID: ${{ inputs.reuse_run_id || '' }}
+          BUILD_WINDOWS: ${{ inputs.build_windows || false }}
+          BUILD_MACOS_INTEL: ${{ inputs.build_macos_intel || false }}
+          BUILD_MACOS_ARM64: ${{ inputs.build_macos_arm64 || false }}
         run: >-
-          python scripts/resolve_versions.py
-          --output versions.json
-          --build-tag "${BUILD_TAG}"
+          python scripts/resolve_build_plan.py
+          --event-name "${GITHUB_EVENT_NAME}"
+          --reuse-run-id "${REUSE_RUN_ID}"
+          --build-windows "${BUILD_WINDOWS}"
+          --build-macos-intel "${BUILD_MACOS_INTEL}"
+          --build-macos-arm64 "${BUILD_MACOS_ARM64}"
+          --output build-plan.json
       - name: Validate integration scripts
         run: python -m unittest discover -s tests -p "test_*.py" -v
-      - name: Show selected versions
-        run: cat versions.json
+      - name: Show selected versions and build plan
+        run: cat versions.json build-plan.json
+
+  reuse_validation:
+    name: Validate reusable platform packages
+    needs: versions
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate reuse source and required artifacts
+        if: >-
+          needs.versions.outputs.reuse_windows == 'true' ||
+          needs.versions.outputs.reuse_macos_intel == 'true' ||
+          needs.versions.outputs.reuse_macos_arm64 == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REUSE_RUN_ID: ${{ needs.versions.outputs.reuse_run_id }}
+          QGIS_VERSION: ${{ needs.versions.outputs.qgis_version }}
+          REUSE_WINDOWS: ${{ needs.versions.outputs.reuse_windows }}
+          REUSE_MACOS_INTEL: ${{ needs.versions.outputs.reuse_macos_intel }}
+          REUSE_MACOS_ARM64: ${{ needs.versions.outputs.reuse_macos_arm64 }}
+        run: |
+          test "${REUSE_RUN_ID}" != "${GITHUB_RUN_ID}"
+          source_status="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${REUSE_RUN_ID}" \
+            --jq '.status')"
+          test "${source_status}" = "completed" || {
+            echo "Reuse source run is not completed: ${source_status}" >&2
+            exit 1
+          }
+
+          artifact_rows="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${REUSE_RUN_ID}/artifacts?per_page=100" \
+            --jq '.artifacts[] | "\(.name)\t\(.expired)"')"
+          require_artifact() {
+            local artifact_name="$1"
+            if ! grep -Fqx "${artifact_name}"$'\tfalse' <<< "${artifact_rows}"; then
+              echo "Reusable artifact is missing or expired: ${artifact_name}" >&2
+              exit 1
+            fi
+          }
+
+          if [[ "${REUSE_WINDOWS}" = true ]]; then
+            require_artifact "QGISPlus-${QGIS_VERSION}-windows-x64"
+          fi
+          if [[ "${REUSE_MACOS_INTEL}" = true ]]; then
+            require_artifact "QGISPlus-${QGIS_VERSION}-macos-intel"
+          fi
+          if [[ "${REUSE_MACOS_ARM64}" = true ]]; then
+            require_artifact "QGISPlus-${QGIS_VERSION}-macos-arm64"
+          fi
 
   windows_environment:
     name: Validate Windows process launchers
-    needs: versions
+    needs: [versions, reuse_validation]
+    if: needs.versions.outputs.build_windows == 'true'
     runs-on: windows-2022
     timeout-minutes: 10
     steps:
@@ -84,19 +189,13 @@ jobs:
 
   macos_environment:
     name: Validate macOS ${{ matrix.name }} toolchain
-    needs: versions
+    needs: [versions, reuse_validation]
+    if: needs.versions.outputs.build_macos == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: true
-      matrix:
-        include:
-          - name: Intel
-            os: macos-15-intel
-            arch: x86_64
-          - name: Apple-Silicon
-            os: macos-15
-            arch: arm64
+      matrix: ${{ fromJSON(needs.versions.outputs.macos_matrix) }}
     env:
       GCC_VERSION: "15"
       MACOSX_DEPLOYMENT_TARGET: "12.0"
@@ -132,6 +231,7 @@ jobs:
   windows_dependencies:
     name: Build fresh Windows dependencies (${{ matrix.shard }})
     needs: [versions, windows_environment]
+    if: needs.versions.outputs.build_windows == 'true'
     runs-on: windows-2022
     timeout-minutes: 350
     strategy:
@@ -331,6 +431,7 @@ jobs:
   windows_build:
     name: Build Windows x64 runtime
     needs: [versions, windows_dependencies]
+    if: needs.versions.outputs.build_windows == 'true'
     runs-on: windows-2022
     timeout-minutes: 350
     env:
@@ -589,6 +690,7 @@ jobs:
   windows_package:
     name: Package and test Windows x64 installer
     needs: [versions, windows_build]
+    if: needs.versions.outputs.build_windows == 'true'
     runs-on: windows-2022
     timeout-minutes: 90
     env:
@@ -734,68 +836,13 @@ jobs:
     name: >-
       Build fresh macOS ${{ matrix.name }} dependencies (${{ matrix.shard }})
     needs: [versions, macos_environment]
+    if: needs.versions.outputs.build_macos == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 350
     strategy:
       fail-fast: true
-      matrix:
-        include:
-          - name: Intel
-            os: macos-15-intel
-            arch: x86_64
-            triplet: x64-osx-dynamic-release
-            deployment_target: "12.0"
-            artifact_arch: intel
-            shard: base
-          - name: Intel
-            os: macos-15-intel
-            arch: x86_64
-            triplet: x64-osx-dynamic-release
-            deployment_target: "12.0"
-            artifact_arch: intel
-            shard: geo
-          - name: Intel
-            os: macos-15-intel
-            arch: x86_64
-            triplet: x64-osx-dynamic-release
-            deployment_target: "12.0"
-            artifact_arch: intel
-            shard: python
-          - name: Intel
-            os: macos-15-intel
-            arch: x86_64
-            triplet: x64-osx-dynamic-release
-            deployment_target: "12.0"
-            artifact_arch: intel
-            shard: qt
-          - name: Apple-Silicon
-            os: macos-15
-            arch: arm64
-            triplet: arm64-osx-dynamic-release
-            deployment_target: "12.0"
-            artifact_arch: arm64
-            shard: base
-          - name: Apple-Silicon
-            os: macos-15
-            arch: arm64
-            triplet: arm64-osx-dynamic-release
-            deployment_target: "12.0"
-            artifact_arch: arm64
-            shard: geo
-          - name: Apple-Silicon
-            os: macos-15
-            arch: arm64
-            triplet: arm64-osx-dynamic-release
-            deployment_target: "12.0"
-            artifact_arch: arm64
-            shard: python
-          - name: Apple-Silicon
-            os: macos-15
-            arch: arm64
-            triplet: arm64-osx-dynamic-release
-            deployment_target: "12.0"
-            artifact_arch: arm64
-            shard: qt
+      matrix: >-
+        ${{ fromJSON(needs.versions.outputs.macos_dependency_matrix) }}
     env:
       QGIS_SOURCE: ${{ github.workspace }}/upstream/QGIS
       FC: gfortran
@@ -825,6 +872,9 @@ jobs:
             echo "$(brew --prefix flex)/bin"
             echo "$(brew --prefix libtool)/bin"
           } >> "${GITHUB_PATH}"
+
+      - name: Isolate Intel dependencies from Homebrew libraries
+        run: bash scripts/isolate_macos_homebrew.sh
 
       - name: Install CMake and Ninja
         uses: lukka/get-cmake@f5b8fbb4d77cec1acc5a5f9f0df4beffaf5d98d9
@@ -924,24 +974,12 @@ jobs:
   macos:
     name: macOS ${{ matrix.name }}
     needs: [versions, macos_dependencies]
+    if: needs.versions.outputs.build_macos == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 360
     strategy:
       fail-fast: true
-      matrix:
-        include:
-          - name: Intel
-            os: macos-15-intel
-            arch: x86_64
-            triplet: x64-osx-dynamic-release
-            deployment_target: "12.0"
-            artifact_arch: intel
-          - name: Apple-Silicon
-            os: macos-15
-            arch: arm64
-            triplet: arm64-osx-dynamic-release
-            deployment_target: "12.0"
-            artifact_arch: arm64
+      matrix: ${{ fromJSON(needs.versions.outputs.macos_matrix) }}
     env:
       QGIS_SOURCE: ${{ github.workspace }}/upstream/QGIS
       QLEMENTINE_SOURCE: ${{ github.workspace }}/upstream/qlementine
@@ -985,6 +1023,9 @@ jobs:
             echo "$(brew --prefix flex)/bin"
             echo "$(brew --prefix libtool)/bin"
           } >> "${GITHUB_PATH}"
+
+      - name: Isolate Intel dependencies from Homebrew libraries
+        run: bash scripts/isolate_macos_homebrew.sh
 
       - name: Install CMake and Ninja
         uses: lukka/get-cmake@f5b8fbb4d77cec1acc5a5f9f0df4beffaf5d98d9
@@ -1132,15 +1173,69 @@ jobs:
 
   release:
     name: Publish tagged build
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: [versions, windows_package, macos]
+    if: >-
+      always() &&
+      needs.versions.outputs.release_tag != '' &&
+      needs.versions.result == 'success' &&
+      needs.reuse_validation.result == 'success' &&
+      (needs.windows_package.result == 'success' ||
+       needs.versions.outputs.reuse_windows == 'true') &&
+      (needs.macos.result == 'success' ||
+       needs.versions.outputs.build_macos == 'false')
+    needs: [versions, reuse_validation, windows_package, macos]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Download current Windows package
+        if: needs.versions.outputs.build_windows == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: QGISPlus-${{ needs.versions.outputs.qgis_version }}-*
+          name: QGISPlus-${{ needs.versions.outputs.qgis_version }}-windows-x64
           path: dist
-          merge-multiple: true
+
+      - name: Reuse Windows package
+        if: needs.versions.outputs.reuse_windows == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: QGISPlus-${{ needs.versions.outputs.qgis_version }}-windows-x64
+          path: dist
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.versions.outputs.reuse_run_id }}
+
+      - name: Download current macOS Intel package
+        if: needs.versions.outputs.build_macos_intel == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: QGISPlus-${{ needs.versions.outputs.qgis_version }}-macos-intel
+          path: dist
+
+      - name: Reuse macOS Intel package
+        if: needs.versions.outputs.reuse_macos_intel == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: QGISPlus-${{ needs.versions.outputs.qgis_version }}-macos-intel
+          path: dist
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.versions.outputs.reuse_run_id }}
+
+      - name: Download current macOS Apple Silicon package
+        if: needs.versions.outputs.build_macos_arm64 == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: QGISPlus-${{ needs.versions.outputs.qgis_version }}-macos-arm64
+          path: dist
+
+      - name: Reuse macOS Apple Silicon package
+        if: needs.versions.outputs.reuse_macos_arm64 == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: QGISPlus-${{ needs.versions.outputs.qgis_version }}-macos-arm64
+          path: dist
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.versions.outputs.reuse_run_id }}
+
       - name: Verify complete release payload
         env:
           QGIS_VERSION: ${{ needs.versions.outputs.qgis_version }}
@@ -1169,9 +1264,19 @@ jobs:
       - name: Create release and upload packages
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.versions.outputs.release_tag }}
         run: |
-          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || \
-            gh release create "${GITHUB_REF_NAME}" \
-              --title "QGIS+ ${GITHUB_REF_NAME}" \
+          existing_tag_sha="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" \
+            --jq '.sha' 2>/dev/null || true)"
+          if [[ -n "${existing_tag_sha}" && \
+                "${existing_tag_sha}" != "${GITHUB_SHA}" ]]; then
+            echo "Release tag ${RELEASE_TAG} already points to ${existing_tag_sha}, not ${GITHUB_SHA}" >&2
+            exit 1
+          fi
+          gh release view "${RELEASE_TAG}" >/dev/null 2>&1 || \
+            gh release create "${RELEASE_TAG}" \
+              --target "${GITHUB_SHA}" \
+              --title "QGIS+ ${RELEASE_TAG}" \
               --notes "QGIS ${{ needs.versions.outputs.qgis_version }} with Qlementine ${{ needs.versions.outputs.qlementine_version }}."
-          gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
+          gh release upload "${RELEASE_TAG}" dist/* --clobber

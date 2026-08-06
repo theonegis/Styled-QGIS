@@ -161,6 +161,34 @@ QLEMENTINE_TAG=v1.4.2 ./scripts/build_style.sh
 8. 对 Windows 安装包执行静默安装、命令行启动和卸载测试；
 9. 对 macOS App 执行无界面启动检查后生成分架构 DMG。
 
+### 复用已经验证的平台安装包
+
+直接推送 `v*` 标签或由定时任务触发时，Actions 始终全量构建三个平台。
+需要复用旧安装包时，应使用 `workflow_dispatch`，显式提供一个已经结束的
+`reuse_run_id`，并关闭不需要重新编译的平台。工作流只按当前 QGIS 版本对应的
+精确 artifact 名称下载，不会模糊匹配依赖缓存、诊断日志或其他版本的安装包；
+发布前仍要求 Windows EXE、Intel DMG 和 Apple Silicon DMG 全部存在且非空，
+并重新生成 `SHA256SUMS.txt`。
+
+例如，在运行 `31059764999` 中 Windows 和 Apple Silicon 已经通过，只重新
+编译 Intel 并发布 `v4.2.1-r16`：
+
+```bash
+gh workflow run build.yml \
+  --repo theonegis/Styled-QGIS \
+  --ref main \
+  -f release_tag=v4.2.1-r16 \
+  -f reuse_run_id=31059764999 \
+  -f build_windows=false \
+  -f build_macos_intel=true \
+  -f build_macos_arm64=false
+```
+
+这种发布方式不要提前创建或推送 `v4.2.1-r16` 标签，否则标签事件会另外启动
+一次全量构建。选择性工作流全部验证通过后，Release 步骤会把标签创建在本次
+工作流使用的提交上。旧运行必须已经结束、位于同一个仓库，而且所需 artifact
+仍在保留期内；否则下载会立即失败，不会回退到不受控的其他运行。
+
 完整 QGIS 编译通常需要数小时。Windows 冷缓存下的 330 个 vcpkg 包无法稳定
 地在单个 GitHub-hosted runner 时限内完成，因此 Windows 使用三阶段流水线：
 依赖预热、QGIS 正式编译、QtIFW 打包。预热阶段即使达到时间上限，也会保存
@@ -278,9 +306,9 @@ DLL，避免“依赖编译通过、安装后的程序却缺少 Fortran DLL”�
 恢复与保存只作为加速项，服务临时不可用不会阻断正式构建；正式配置完成后
 还会再次保存完整缓存。
 
-当前 Actions 的 macOS vcpkg 二进制包只在同一次工作流中通过文件 artifact
-传递，不依赖 GitHub Packages/NuGet 的写入权限。跨运行复用由联网制备阶段
-导出的平台依赖包负责；离线正式编译只读该依赖包。
+当前 Actions 的 vcpkg 二进制包只在同一次工作流中通过文件 artifact 传递，
+不依赖 GitHub Packages/NuGet 的写入权限。跨运行只复用已经完成安装、启动和
+兼容性检查的最终 EXE/DMG，不复用可能受补丁或 runner 环境影响的中间依赖包。
 
 macOS 不再调用会跟随 `latest` 漂移的上游 `vcpkg-init.sh`，而是从所选 QGIS
 Release 的 `vcpkg.json` 读取 40 位 baseline，检出并启动同一提交的 vcpkg。
@@ -308,6 +336,13 @@ macOS 显式关闭上游用于开发阶段生成 QScintilla API/PAP 文件的
 `WITH_QSCIAPI`。这不会关闭 Python、PyQGIS 或 Processing，可避免 vcpkg
 Python 在生成 PAP 时同时加载多个 Qt6Core 兼容名导致的构建期崩溃。
 
+Intel GitHub runner 的 Homebrew 位于编译器默认搜索前缀 `/usr/local`。
+`scripts/isolate_macos_homebrew.sh` 会在构建 vcpkg 分片前解除 `gdbm`、
+`libavif`、`aom`、`dav1d`、`libvmaf` 和 `libyaml` 的前缀链接，防止 Python、
+Pillow 与 PyYAML 自动链接 runner 镜像中最低仅支持 macOS 14/15 的库。
+该操作不删除 Homebrew Cellar 内容；隔离后还会立即检查残留链接，最终 DMG
+仍由 `verify_macos_bundle.sh` 逐个检查 Mach-O 架构和 macOS 12.0 最低版本。
+
 ## 目录
 
 ```text
@@ -316,10 +351,12 @@ Python 在生成 PAP 时同时加载多个 Qt6Core 兼容名导致的构建期�
 ├── src/                            # 极薄的 Qlementine 插件适配层
 ├── scripts/
 │   ├── resolve_versions.py         # 稳定 Release 解析
+│   ├── resolve_build_plan.py       # 平台构建/最终安装包复用计划
 │   ├── prepare_source.py           # 拉取上游并生成可构建源码
 │   ├── apply_qgis_patch.py         # 幂等、锚点校验的 QGIS 补丁
 │   ├── configure_windows_qgis.sh    # Windows 两阶段共用的 QGIS 配置参数
 │   ├── setup_macos_vcpkg.sh         # 按 QGIS baseline 固定 macOS vcpkg
+│   ├── isolate_macos_homebrew.sh     # 隔离 Intel runner 的非声明动态库
 │   └── prepare_ifw_package.py      # 生成并校验 Windows QtIFW 元数据
 ├── packaging/ifw/                  # Windows 安装器组件脚本
 ├── tests/                          # 版本选择、补丁和插件发现测试

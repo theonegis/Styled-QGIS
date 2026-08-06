@@ -36,11 +36,96 @@ from prepare_vcpkg_shard import (
     create_shard_manifest,
     dependency_shard,
 )
+from resolve_build_plan import resolve_build_plan
 from resolve_versions import (
     QGIS_RELEASE_RE,
     _qgis_version_from_build_tag,
     _select_release,
 )
+
+
+class BuildPlanTests(unittest.TestCase):
+    def test_tag_push_always_builds_every_platform(self) -> None:
+        plan = resolve_build_plan(
+            event_name="push",
+            reuse_run_id="31059764999",
+            build_windows="false",
+            build_macos_intel="false",
+            build_macos_arm64="false",
+        )
+
+        self.assertEqual(plan["reuse_run_id"], "")
+        self.assertTrue(plan["build_windows"])
+        self.assertTrue(plan["build_macos_intel"])
+        self.assertTrue(plan["build_macos_arm64"])
+        self.assertEqual(len(plan["macos_matrix"]["include"]), 2)
+        self.assertEqual(
+            len(plan["macos_dependency_matrix"]["include"]), 8
+        )
+
+    def test_dispatch_can_build_only_intel(self) -> None:
+        plan = resolve_build_plan(
+            event_name="workflow_dispatch",
+            reuse_run_id="31059764999",
+            build_windows="false",
+            build_macos_intel="true",
+            build_macos_arm64="false",
+        )
+
+        self.assertFalse(plan["build_windows"])
+        self.assertTrue(plan["build_macos"])
+        self.assertTrue(plan["build_macos_intel"])
+        self.assertFalse(plan["build_macos_arm64"])
+        self.assertTrue(plan["reuse_windows"])
+        self.assertFalse(plan["reuse_macos_intel"])
+        self.assertTrue(plan["reuse_macos_arm64"])
+        self.assertEqual(
+            [entry["artifact_arch"] for entry in plan["macos_matrix"]["include"]],
+            ["intel"],
+        )
+        self.assertEqual(
+            [
+                entry["shard"]
+                for entry in plan["macos_dependency_matrix"]["include"]
+            ],
+            ["base", "geo", "python", "qt"],
+        )
+
+    def test_dispatch_reuse_requires_a_positive_run_id(self) -> None:
+        with self.assertRaisesRegex(ValueError, "positive reuse_run_id"):
+            resolve_build_plan(
+                event_name="workflow_dispatch",
+                reuse_run_id="",
+                build_windows="false",
+                build_macos_intel="true",
+                build_macos_arm64="true",
+            )
+
+    def test_dispatch_can_reuse_every_platform(self) -> None:
+        plan = resolve_build_plan(
+            event_name="workflow_dispatch",
+            reuse_run_id="31059764999",
+            build_windows="false",
+            build_macos_intel="false",
+            build_macos_arm64="false",
+        )
+
+        self.assertFalse(plan["build_windows"])
+        self.assertFalse(plan["build_macos"])
+        self.assertEqual(plan["macos_matrix"], {"include": []})
+        self.assertEqual(
+            plan["macos_dependency_matrix"], {"include": []}
+        )
+
+    def test_dispatch_rejects_invalid_boolean_input(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Expected true or false"):
+            resolve_build_plan(
+                event_name="workflow_dispatch",
+                reuse_run_id="31059764999",
+                build_windows="yes",
+                build_macos_intel="true",
+                build_macos_arm64="true",
+            )
 
 
 class SourcePreparationTests(unittest.TestCase):
@@ -867,7 +952,18 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("needs: [versions, windows_dependencies]", workflow)
         self.assertIn("needs: [versions, windows_build]", workflow)
         self.assertIn(
-            "needs: [versions, windows_package, macos]", workflow
+            "needs: [versions, reuse_validation, windows_package, macos]",
+            workflow,
+        )
+        self.assertIn("release_tag:", workflow)
+        self.assertIn("reuse_run_id:", workflow)
+        self.assertIn("build_windows:", workflow)
+        self.assertIn("build_macos_intel:", workflow)
+        self.assertIn("build_macos_arm64:", workflow)
+        self.assertIn("resolve_build_plan.py", workflow)
+        self.assertIn(
+            "matrix: ${{ fromJSON(needs.versions.outputs.macos_matrix) }}",
+            workflow,
         )
         self.assertIn("QtInstallerFramework/4.7/bin", workflow)
         self.assertIn("Silently install and verify QGIS+", workflow)
@@ -1129,6 +1225,12 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn(
             "run: bash scripts/setup_macos_vcpkg.sh", macos_job
         )
+        self.assertEqual(
+            macos_jobs.count(
+                "run: bash scripts/isolate_macos_homebrew.sh"
+            ),
+            2,
+        )
         self.assertNotIn(
             "uses: ./upstream/QGIS/.github/actions/setup-vcpkg",
             macos_job,
@@ -1214,15 +1316,17 @@ class WorkflowTests(unittest.TestCase):
             root / "scripts/verify_macos_bundle.sh"
         ).read_text(encoding="utf-8")
 
+        build_plan_script = (
+            root / "scripts/resolve_build_plan.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"os": "macos-15-intel"', build_plan_script)
+        self.assertIn('"arch": "x86_64"', build_plan_script)
         self.assertIn(
-            "- name: Intel\n"
-            "            os: macos-15-intel\n"
-            "            arch: x86_64\n"
-            "            triplet: x64-osx-dynamic-release\n"
-            '            deployment_target: "12.0"',
-            macos_job,
+            '"triplet": "x64-osx-dynamic-release"', build_plan_script
         )
-        self.assertEqual(macos_job.count('deployment_target: "12.0"'), 2)
+        self.assertEqual(
+            build_plan_script.count('"deployment_target": "12.0"'), 2
+        )
         self.assertNotIn('deployment_target: "10.15"', macos_job)
         self.assertNotIn('deployment_target: "11.0"', macos_job)
         self.assertIn("Validate macOS dependency patches", macos_job)
@@ -1266,8 +1370,9 @@ class WorkflowTests(unittest.TestCase):
             "  macos_environment:", 1
         )[1].split("  windows_dependencies:", 1)[0]
         self.assertIn("Validate macOS ${{ matrix.name }} toolchain", macos_environment)
-        self.assertIn("name: Intel", macos_environment)
-        self.assertIn("name: Apple-Silicon", macos_environment)
+        self.assertIn("fromJSON(needs.versions.outputs.macos_matrix)", macos_environment)
+        self.assertIn('"name": "Intel"', build_plan_script)
+        self.assertIn('"name": "Apple-Silicon"', build_plan_script)
         self.assertIn('MACOSX_DEPLOYMENT_TARGET: "12.0"', macos_environment)
         self.assertIn("xcrun clang++", macos_environment)
         self.assertIn("xcrun vtool -show-build", macos_environment)
@@ -1283,6 +1388,26 @@ class WorkflowTests(unittest.TestCase):
             'sudo ln -sfn "${gfortran_executable}"', toolchain_script
         )
         self.assertNotIn("/Cellar/", toolchain_script)
+
+        isolation_script = (
+            root / "scripts/isolate_macos_homebrew.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn('target_arch="${QGISPLUS_MACOS_ARCH:-', isolation_script)
+        self.assertIn('brew_prefix="$(brew --prefix)"', isolation_script)
+        for formula in (
+            "gdbm",
+            "libavif",
+            "aom",
+            "dav1d",
+            "libvmaf",
+            "libyaml",
+        ):
+            self.assertRegex(
+                isolation_script,
+                rf"(?m)^  {formula}$",
+            )
+        self.assertIn('brew unlink "${formula}"', isolation_script)
+        self.assertIn("compgen -G", isolation_script)
 
         syntax_check = subprocess.run(
             ["bash", "-n", str(root / "scripts/verify_macos_bundle.sh")],
@@ -1359,6 +1484,9 @@ class WorkflowTests(unittest.TestCase):
             / ".github/workflows/build.yml"
         ).read_text(encoding="utf-8")
         release_job = workflow.split("  release:", 1)[1]
+        reuse_validation = workflow.split(
+            "  reuse_validation:", 1
+        )[1].split("  windows_environment:", 1)[0]
 
         self.assertIn("Verify complete release payload", release_job)
         self.assertIn("windows-x64-setup.exe", release_job)
@@ -1367,6 +1495,19 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('test -s "dist/${package}"', release_job)
         self.assertIn("sha256sum", release_job)
         self.assertIn("SHA256SUMS.txt", release_job)
+        self.assertIn(
+            "Validate reuse source and required artifacts",
+            reuse_validation,
+        )
+        self.assertIn("source_status", reuse_validation)
+        self.assertIn(".expired", reuse_validation)
+        self.assertIn("require_artifact", reuse_validation)
+        self.assertEqual(release_job.count("run-id: ${{ needs.versions.outputs.reuse_run_id }}"), 3)
+        self.assertEqual(release_job.count("github-token: ${{ github.token }}"), 3)
+        self.assertIn("needs.reuse_validation.result == 'success'", release_job)
+        self.assertIn('needs.versions.outputs.release_tag != \'\'', release_job)
+        self.assertIn('--target "${GITHUB_SHA}"', release_job)
+        self.assertIn('"${existing_tag_sha}" != "${GITHUB_SHA}"', release_job)
 
 
 class VersionResolverTests(unittest.TestCase):
