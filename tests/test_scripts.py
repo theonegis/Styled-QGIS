@@ -987,6 +987,15 @@ class WorkflowTests(unittest.TestCase):
         )
         self.assertIn("QGIS_BUILD: D:/b/qgis", windows_build)
         self.assertIn("STYLE_BUILD: D:/b/style", windows_build)
+        self.assertIn(
+            'qt_runtime_bin="$(cygpath -u',
+            windows_build,
+        )
+        self.assertIn('export PATH="${qt_runtime_bin}:${PATH}"', windows_build)
+        self.assertNotIn(
+            'export PATH="${QGIS_BUILD}/vcpkg_installed/',
+            windows_build,
+        )
         self.assertNotIn(
             "${{ github.workspace }}/upstream/QGIS",
             windows_jobs,
@@ -1037,6 +1046,16 @@ class WorkflowTests(unittest.TestCase):
         )[0]
         self.assertNotIn("continue-on-error: true", dependency_build_step)
         self.assertNotIn("Save completed Windows dependency cache", windows_build)
+
+        cmake = (
+            Path(__file__).resolve().parents[1] / "CMakeLists.txt"
+        ).read_text(encoding="utf-8")
+        self.assertIn("if(WIN32)", cmake)
+        self.assertIn("ENVIRONMENT_MODIFICATION", cmake)
+        self.assertIn(
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>",
+            cmake,
+        )
 
     def test_windows_launcher_smoke_precedes_expensive_jobs(self) -> None:
         workflow = (

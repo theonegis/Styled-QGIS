@@ -190,7 +190,9 @@ Windows 与 macOS 都把直接依赖拆为 `base`、`geo`、`python`、`qt` 四�
 Windows 看门狗显式使用 `actions/setup-python` 提供的 `python.exe`，并在正式
 配置前验证其路径和版本。由原生 Python 启动的 Bash 同样固定为当前 Git Bash
 经过 `cygpath` 转换后的 Windows 绝对路径；不使用可能被系统解析为 WSL 启动器
-的裸 `python3` 或 `bash` 命令。macOS 继续使用系统 shell 与 `python3`。
+的裸 `python3` 或 `bash` 命令。Style 插件发现测试由 CTest 注入 Qt DLL 目录，
+Actions 中的运行时路径也先通过 `cygpath` 转换，避免 Windows 盘符冒号被 Git
+Bash 当作 `PATH` 分隔符。macOS 继续使用系统 shell 与 `python3`。
 
 正式依赖矩阵启动前，独立的 Windows 环境 smoke Job 会实际执行完整的
 `Git Bash → python.exe → Git Bash → shell script` 进程链。启动器、路径转换或

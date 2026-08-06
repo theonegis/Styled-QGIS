@@ -522,7 +522,9 @@ jobs:
             -D QGISPLUS_QLEMENTINE_SOURCE_DIR="${QLEMENTINE_SOURCE}" \
             -D QGISPLUS_QLEMENTINE_TAG="${{ needs.versions.outputs.qlementine_tag }}"
           cmake --build "${STYLE_BUILD}" --config Release
-          export PATH="${QGIS_BUILD}/vcpkg_installed/${VCPKG_TRIPLET}/bin:${PATH}"
+          qt_runtime_bin="$(cygpath -u \
+            "${QGIS_BUILD}/vcpkg_installed/${VCPKG_TRIPLET}/bin")"
+          export PATH="${qt_runtime_bin}:${PATH}"
           ctest --test-dir "${STYLE_BUILD}" -C Release --output-on-failure
 
           STYLE_PLUGIN="$(find "${STYLE_BUILD}/plugins/styles" \

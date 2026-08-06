@@ -87,4 +87,14 @@ if(QGISPLUS_BUILD_TESTS)
         NAME style-plugin-discovery
         COMMAND QGISPlusStyleSmokeTest $<TARGET_FILE:QGISPlusStyle>
     )
+
+    # Windows 必须在创建测试进程前找到 Qt DLL。直接在 Git Bash 的 PATH
+    # 中拼接 D:/... 会把盘符冒号误判为列表分隔符，因此由 CTest 从导入的
+    # Qt 目标解析真实运行时目录，保证本地构建和 CI 使用同一规则。
+    if(WIN32)
+        set_tests_properties(style-plugin-discovery PROPERTIES
+            ENVIRONMENT_MODIFICATION
+                "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"
+        )
+    endif()
 endif()
