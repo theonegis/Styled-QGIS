@@ -68,10 +68,11 @@ sed "s/@VERSION@/${version}/g" \
 plugin_path="${outer_app}/Contents/PlugIns/styles/$(basename "${style_plugin}")"
 qgis_binary="${outer_app}/Contents/Resources/QGIS.app/Contents/MacOS/${official_executable}"
 
-lipo -verify_arch "${target_arch}" "${plugin_path}"
-lipo -verify_arch "${target_arch}" \
-    "${outer_app}/Contents/MacOS/QGISPlusLauncher"
-lipo -verify_arch "${target_arch}" "${qgis_binary}"
+# lipo 的输入文件必须位于命令之前，否则它会把文件路径当成额外架构名。
+lipo "${plugin_path}" -verify_arch "${target_arch}"
+lipo "${outer_app}/Contents/MacOS/QGISPlusLauncher" \
+    -verify_arch "${target_arch}"
+lipo "${qgis_binary}" -verify_arch "${target_arch}"
 if ! otool -l "${plugin_path}" | grep -Fq \
         '@loader_path/../../Resources/QGIS.app/Contents/Frameworks'; then
     install_name_tool -add_rpath \

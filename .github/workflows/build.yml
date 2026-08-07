@@ -241,9 +241,19 @@ jobs:
           $runtime = Join-Path $ifwRoot "packages/org.qgisplus.desktop/data"
           New-Item -ItemType Directory -Force -Path $runtime | Out-Null
           $msi = Resolve-Path ".cache/qgis-installer/${{ needs.versions.outputs.windows_name }}"
-          & msiexec.exe /a $msi /qn "TARGETDIR=$runtime"
-          if ($LASTEXITCODE -notin @(0, 3010)) {
-            throw "Administrative MSI extraction failed with exit code $LASTEXITCODE"
+          # msiexec 是 GUI 子系统程序；PowerShell 的直接调用可能在安装进程
+          # 完成前返回，并留下空的 LASTEXITCODE。显式等待并读取 Process.ExitCode。
+          $msiArguments = @(
+            "/a"
+            "`"$($msi.Path)`""
+            "/qn"
+            "/norestart"
+            "TARGETDIR=`"$runtime`""
+          )
+          $msiProcess = Start-Process -FilePath "msiexec.exe" `
+            -ArgumentList $msiArguments -Wait -PassThru
+          if ($msiProcess.ExitCode -notin @(0, 3010)) {
+            throw "Administrative MSI extraction failed with exit code $($msiProcess.ExitCode)"
           }
           python scripts/stage_windows_binary.py `
             --runtime $runtime `

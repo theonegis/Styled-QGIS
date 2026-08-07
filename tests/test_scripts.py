@@ -263,9 +263,20 @@ class WorkflowTests(unittest.TestCase):
 
     def test_macos_plugin_uses_bundled_qgis_qt_frameworks(self) -> None:
         packaging = (ROOT / "scripts" / "package_macos_binary.sh").read_text()
+        self.assertIn('lipo "${plugin_path}" -verify_arch "${target_arch}"', packaging)
+        self.assertNotIn('lipo -verify_arch "${target_arch}"', packaging)
         self.assertIn("@loader_path/../../Resources/QGIS.app/Contents/Frameworks", packaging)
         self.assertIn("install_name_tool -change", packaging)
         self.assertIn("Style plugin still references an absolute Qt framework path", packaging)
+
+    def test_windows_waits_for_msi_extraction_and_reads_process_exit_code(self) -> None:
+        windows_step = self.workflow.split(
+            "- name: Extract and stage official Windows runtime", 1
+        )[1].split("- name: Restore Qt Installer Framework cache", 1)[0]
+        self.assertIn("Start-Process", windows_step)
+        self.assertIn("-Wait -PassThru", windows_step)
+        self.assertIn("$msiProcess.ExitCode", windows_step)
+        self.assertNotIn("& msiexec.exe", windows_step)
 
     def test_workflow_matrix_is_valid_json(self) -> None:
         matrix = package_matrix.resolve_matrix("schedule", "true", "true", "true")
