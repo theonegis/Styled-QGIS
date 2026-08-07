@@ -119,7 +119,8 @@ jobs:
     name: ${{ matrix.name }}
     needs: versions
     strategy:
-      fail-fast: true
+      # 平台彼此独立；单个平台失败时保留其他平台的诊断与可复用产物。
+      fail-fast: false
       matrix: ${{ fromJSON(needs.versions.outputs.package_matrix) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
@@ -175,13 +176,24 @@ jobs:
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          cmake -S . -B build -G Ninja `
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
             -D CMAKE_BUILD_TYPE=Release `
             -D CMAKE_PREFIX_PATH="$env:QT_ROOT" `
             -D QGISPLUS_QLEMENTINE_SOURCE_DIR="$env:GITHUB_WORKSPACE/upstream/qlementine" `
             -D QGISPLUS_QLEMENTINE_TAG="${{ needs.versions.outputs.qlementine_tag }}"
-          cmake --build build --parallel 2
+          if ($LASTEXITCODE -ne 0) {
+            throw "CMake configuration failed with exit code $LASTEXITCODE"
+          }
+          cmake --build build --config Release --parallel 2
+          if ($LASTEXITCODE -ne 0) {
+            throw "CMake build failed with exit code $LASTEXITCODE"
+          }
           ctest --test-dir build -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) {
+            throw "CTest failed with exit code $LASTEXITCODE"
+          }
       - name: Configure and build macOS overlay
         if: startsWith(matrix.platform, 'macos-')
         shell: bash
@@ -223,6 +235,8 @@ jobs:
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           $ifwRoot = Join-Path $env:RUNNER_TEMP "qgisplus-ifw"
           $runtime = Join-Path $ifwRoot "packages/org.qgisplus.desktop/data"
           New-Item -ItemType Directory -Force -Path $runtime | Out-Null
@@ -233,14 +247,20 @@ jobs:
           }
           python scripts/stage_windows_binary.py `
             --runtime $runtime `
-            --launcher "build/launcher/QGIS+.exe" `
-            --style-plugin "build/plugins/styles/qgisplusstyle.dll"
+            --launcher "build/launcher/Release/QGIS+.exe" `
+            --style-plugin "build/plugins/styles/Release/qgisplusstyle.dll"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows runtime staging failed with exit code $LASTEXITCODE"
+          }
           python scripts/prepare_ifw_package.py `
             --runtime $runtime `
             --output $ifwRoot `
             --version "${{ needs.versions.outputs.qgis_version }}" `
             --license LICENSE `
             --install-script packaging/ifw/installscript.qs
+          if ($LASTEXITCODE -ne 0) {
+            throw "QtIFW metadata preparation failed with exit code $LASTEXITCODE"
+          }
           "IFW_ROOT=$ifwRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Restore Qt Installer Framework cache
         if: matrix.platform == 'windows'
@@ -267,6 +287,8 @@ jobs:
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           $output = "dist/QGISPlus-${{ needs.versions.outputs.qgis_version }}-Windows-x64.exe"
           & $env:BINARYCREATOR -c "$env:IFW_ROOT/config/config.xml" -p "$env:IFW_ROOT/packages" $output

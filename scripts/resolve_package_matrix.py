@@ -14,7 +14,7 @@ PLATFORMS = {
     "windows": {
         "platform": "windows",
         "name": "Windows x64 installer",
-        "os": "windows-2025",
+        "os": "windows-2022",
         "arch": "x64",
         "qt_host": "windows",
         "qt_arch": "win64_msvc2022_64",

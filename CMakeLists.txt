@@ -11,6 +11,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_AUTOMOC ON)
 
+if(WIN32 AND NOT MSVC)
+    message(FATAL_ERROR
+        "QGIS+ Windows plugins must use MSVC to match the official Qt SDK")
+endif()
+
 set(QGISPLUS_QLEMENTINE_TAG "v1.4.2" CACHE STRING
     "Qlementine Git tag used when no local source directory is supplied")
 set(QGISPLUS_QLEMENTINE_SOURCE_DIR "" CACHE PATH

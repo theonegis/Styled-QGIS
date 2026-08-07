@@ -77,6 +77,12 @@ class MatrixTests(unittest.TestCase):
     def test_non_dispatch_builds_all_platforms(self) -> None:
         matrix = package_matrix.resolve_matrix("schedule", "false", "false", "false")
         self.assertEqual(len(matrix["include"]), 3)
+        windows = next(
+            platform for platform in matrix["include"]
+            if platform["platform"] == "windows"
+        )
+        self.assertEqual(windows["os"], "windows-2022")
+        self.assertEqual(windows["qt_arch"], "win64_msvc2022_64")
 
     def test_dispatch_can_select_one_platform(self) -> None:
         matrix = package_matrix.resolve_matrix(
@@ -209,7 +215,25 @@ class WorkflowTests(unittest.TestCase):
                 reference = line.split("@", 1)[-1].split()[0]
                 self.assertRegex(reference, r"^[0-9a-f]{40}$")
         self.assertIn("cancel-in-progress: false", self.workflow)
+        self.assertIn("fail-fast: false", self.workflow)
         self.assertNotIn("gh run cancel", self.workflow)
+
+    def test_windows_uses_matching_msvc_2022_toolchain(self) -> None:
+        self.assertIn('-G "Visual Studio 17 2022" -A x64', self.workflow)
+        self.assertIn("build/launcher/Release/QGIS+.exe", self.workflow)
+        self.assertIn(
+            "build/plugins/styles/Release/qgisplusstyle.dll", self.workflow
+        )
+        self.assertIn(
+            "$PSNativeCommandUseErrorActionPreference = $true", self.workflow
+        )
+        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertIn("if(WIN32 AND NOT MSVC)", cmake)
+        self.assertIn("must use MSVC", cmake)
+        windows_step = self.workflow.split(
+            "- name: Configure and build Windows overlay", 1
+        )[1].split("- name: Configure and build macOS overlay", 1)[0]
+        self.assertNotIn("-G Ninja", windows_step)
 
     def test_macos_target_is_monterey(self) -> None:
         self.assertIn("CMAKE_OSX_DEPLOYMENT_TARGET=12.0", self.workflow)

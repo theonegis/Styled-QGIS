@@ -94,10 +94,14 @@ Actions 缓存以下可复用内容：
 SHA-256。缓存未命中、恢复失败、内容不完整或校验错误时，工作流会删除无效内容
 并重新下载，而不是让缓存成为构建的单点故障。
 
-矩阵使用 `fail-fast: true`：一个平台出现真实错误后，其余仍在运行的同批矩阵
-任务会被 GitHub 终止，避免继续消耗 Runner 时间。工作流没有调用
-`gh run cancel`，且并发策略为 `cancel-in-progress: false`，所以新提交不会取消
-已经开始的旧构建。
+矩阵使用 `fail-fast: false`：某个平台失败时，其他平台仍会完成并上传各自产物，
+便于独立诊断，也不会丢失已经成功的平台包。Release 仍要求三个目标平台全部
+成功，因此不会发布残缺版本。工作流没有调用 `gh run cancel`，且并发策略为
+`cancel-in-progress: false`，所以新提交也不会取消已经开始的旧构建。
+
+Windows 固定使用 `windows-2022` 与 Visual Studio 17 2022 x64 生成器，和
+`win64_msvc2022_64` Qt SDK 保持一致，避免 Runner `PATH` 中的 MinGW 被 Ninja
+自动误选。
 
 ## 本地开发与检查
 
