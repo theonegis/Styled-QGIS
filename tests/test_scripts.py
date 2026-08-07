@@ -117,6 +117,31 @@ class BuildPlanTests(unittest.TestCase):
             plan["macos_dependency_matrix"], {"include": []}
         )
 
+    def test_dispatch_accepts_a_dependency_resume_run(self) -> None:
+        plan = resolve_build_plan(
+            event_name="workflow_dispatch",
+            reuse_run_id="31059764999",
+            dependency_reuse_run_id="31102620804",
+            build_windows="false",
+            build_macos_intel="true",
+            build_macos_arm64="false",
+        )
+
+        self.assertEqual(plan["dependency_reuse_run_id"], "31102620804")
+
+    def test_dependency_resume_run_must_be_positive(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError, "dependency_reuse_run_id must be a positive"
+        ):
+            resolve_build_plan(
+                event_name="workflow_dispatch",
+                reuse_run_id="",
+                dependency_reuse_run_id="cancelled-run",
+                build_windows="true",
+                build_macos_intel="true",
+                build_macos_arm64="true",
+            )
+
     def test_dispatch_rejects_invalid_boolean_input(self) -> None:
         with self.assertRaisesRegex(ValueError, "Expected true or false"):
             resolve_build_plan(
@@ -1264,7 +1289,7 @@ class WorkflowTests(unittest.TestCase):
         )
         self.assertNotIn("bootstrap-vcpkg.sh", setup_script)
 
-    def test_macos_dependency_configuration_uses_only_current_run(
+    def test_macos_dependency_reuse_falls_back_and_promotes_to_current_run(
         self,
     ) -> None:
         workflow = (
@@ -1282,6 +1307,23 @@ class WorkflowTests(unittest.TestCase):
             "needs: [versions, macos_environment]", dependency_job
         )
         self.assertIn("needs: [versions, macos_dependencies]", macos_job)
+        self.assertIn(
+            "Reuse completed macOS dependency shard from an earlier run",
+            dependency_job,
+        )
+        self.assertIn(
+            "run-id: ${{ needs.versions.outputs.dependency_reuse_run_id }}",
+            dependency_job,
+        )
+        self.assertIn("continue-on-error: true", dependency_job)
+        self.assertIn(
+            "if: steps.reuse_dependency_shard.outcome != 'success'",
+            dependency_job,
+        )
+        self.assertIn(
+            "path: ${{ runner.temp }}/vcpkg-binary-cache",
+            dependency_job,
+        )
         dependency_build_step = dependency_job.split(
             "- name: Build dependency shard from source", 1
         )[1].split(

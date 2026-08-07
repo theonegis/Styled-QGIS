@@ -49,6 +49,7 @@ def resolve_build_plan(
     build_windows: str,
     build_macos_intel: str,
     build_macos_arm64: str,
+    dependency_reuse_run_id: str = "",
 ) -> dict[str, Any]:
     # tag push 和定时任务没有可审查的复用来源，始终执行完整构建。
     if event_name != "workflow_dispatch":
@@ -58,6 +59,7 @@ def resolve_build_plan(
             "arm64": True,
         }
         reuse_run_id = ""
+        dependency_reuse_run_id = ""
     else:
         selections = {
             "windows": _parse_boolean(build_windows),
@@ -65,12 +67,20 @@ def resolve_build_plan(
             "arm64": _parse_boolean(build_macos_arm64),
         }
         reuse_run_id = reuse_run_id.strip()
+        dependency_reuse_run_id = dependency_reuse_run_id.strip()
 
     reused = [name for name, selected in selections.items() if not selected]
     if reused and re.fullmatch(r"[1-9][0-9]*", reuse_run_id) is None:
         raise ValueError(
             "A positive reuse_run_id is required when any platform build "
             "is disabled"
+        )
+    if (
+        dependency_reuse_run_id
+        and re.fullmatch(r"[1-9][0-9]*", dependency_reuse_run_id) is None
+    ):
+        raise ValueError(
+            "dependency_reuse_run_id must be a positive Actions run ID"
         )
 
     selected_macos = [
@@ -88,6 +98,7 @@ def resolve_build_plan(
 
     return {
         "reuse_run_id": reuse_run_id,
+        "dependency_reuse_run_id": dependency_reuse_run_id,
         "build_windows": selections["windows"],
         "build_macos": bool(selected_macos),
         "build_macos_intel": selections["intel"],
@@ -116,6 +127,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--event-name", required=True)
     parser.add_argument("--reuse-run-id", default="")
+    parser.add_argument("--dependency-reuse-run-id", default="")
     parser.add_argument("--build-windows", default="true")
     parser.add_argument("--build-macos-intel", default="true")
     parser.add_argument("--build-macos-arm64", default="true")
@@ -133,6 +145,7 @@ def main() -> int:
         plan = resolve_build_plan(
             event_name=args.event_name,
             reuse_run_id=args.reuse_run_id,
+            dependency_reuse_run_id=args.dependency_reuse_run_id,
             build_windows=args.build_windows,
             build_macos_intel=args.build_macos_intel,
             build_macos_arm64=args.build_macos_arm64,

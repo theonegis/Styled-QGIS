@@ -189,6 +189,29 @@ gh workflow run build.yml \
 工作流使用的提交上。旧运行必须已经结束、位于同一个仓库，而且所需 artifact
 仍在保留期内；否则下载会立即失败，不会回退到不受控的其他运行。
 
+如果长时间运行被人工或平台取消，还可以通过 `dependency_reuse_run_id` 恢复
+该运行中已经完成的 macOS `base`、`geo`、`python`、`qt` 分片。每个分片按
+当前 QGIS 版本、架构和分片名精确下载；找到后会提升为本次运行的 artifact，
+找不到、已过期或下载失败则仅让该分片回退到源码构建，不会中止工作流。
+`reuse_run_id` 负责最终 EXE/DMG，`dependency_reuse_run_id` 负责中间依赖，
+二者可以来自不同运行。例如复用运行 `31059764999` 的 Windows/Apple Silicon
+安装包，并从被取消的运行 `31102620804` 续编 Intel：
+
+```bash
+gh workflow run build.yml \
+  --repo theonegis/Styled-QGIS \
+  --ref main \
+  -f release_tag=v4.2.1-r16 \
+  -f reuse_run_id=31059764999 \
+  -f dependency_reuse_run_id=31102620804 \
+  -f build_windows=false \
+  -f build_macos_intel=true \
+  -f build_macos_arm64=false
+```
+
+中间依赖只能显式复用自己仓库中、使用相同 QGIS 版本和构建配置产生的运行；
+依赖构建规则发生变化时应留空，以执行一次新的全量依赖编译。
+
 完整 QGIS 编译通常需要数小时。Windows 冷缓存下的 330 个 vcpkg 包无法稳定
 地在单个 GitHub-hosted runner 时限内完成，因此 Windows 使用三阶段流水线：
 依赖预热、QGIS 正式编译、QtIFW 打包。预热阶段即使达到时间上限，也会保存
@@ -306,9 +329,10 @@ DLL，避免“依赖编译通过、安装后的程序却缺少 Fortran DLL”�
 恢复与保存只作为加速项，服务临时不可用不会阻断正式构建；正式配置完成后
 还会再次保存完整缓存。
 
-当前 Actions 的 vcpkg 二进制包只在同一次工作流中通过文件 artifact 传递，
-不依赖 GitHub Packages/NuGet 的写入权限。跨运行只复用已经完成安装、启动和
-兼容性检查的最终 EXE/DMG，不复用可能受补丁或 runner 环境影响的中间依赖包。
+当前 Actions 的 vcpkg 二进制包通过文件 artifact 传递，不依赖 GitHub
+Packages/NuGet 的写入权限。默认仅在同一次工作流中使用；手动指定
+`dependency_reuse_run_id` 时，才按精确版本、架构和分片名跨运行恢复，恢复失败
+会自动回退源码编译。最终 EXE/DMG 则只从显式指定且已经验证完成的运行复用。
 
 macOS 不再调用会跟随 `latest` 漂移的上游 `vcpkg-init.sh`，而是从所选 QGIS
 Release 的 `vcpkg.json` 读取 40 位 baseline，检出并启动同一提交的 vcpkg。
