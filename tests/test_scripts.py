@@ -245,6 +245,22 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("Print :CFBundleIconFile", packaging)
         self.assertNotIn("-print -quit", packaging)
 
+    def test_macos_extractor_accepts_versioned_app_and_package_bundles(self) -> None:
+        extractor = (ROOT / "scripts" / "extract_official_macos.sh").read_text()
+        self.assertIn("-name 'QGIS*.app'", extractor)
+        self.assertIn("-name '*.app'", extractor)
+        self.assertIn("-name '*.pkg'", extractor)
+        self.assertNotIn("-type f -name '*.pkg'", extractor)
+        self.assertIn("Mounted DMG root contents", extractor)
+        self.assertNotIn("-maxdepth", extractor)
+
+    def test_style_smoke_test_uses_a_real_offscreen_gui_context(self) -> None:
+        smoke_test = (ROOT / "tests" / "StylePluginSmokeTest.cpp").read_text()
+        self.assertIn("QApplication app", smoke_test)
+        self.assertIn('qputenv("QT_QPA_PLATFORM"', smoke_test)
+        self.assertIn('plugin->create(', smoke_test)
+        self.assertNotIn("QStyleFactory::", smoke_test)
+
     def test_macos_plugin_uses_bundled_qgis_qt_frameworks(self) -> None:
         packaging = (ROOT / "scripts" / "package_macos_binary.sh").read_text()
         self.assertIn("@loader_path/../../Resources/QGIS.app/Contents/Frameworks", packaging)
