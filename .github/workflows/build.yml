@@ -4,1310 +4,346 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: >-
-          Optional release tag to create after all selected/reused packages pass
-        required: false
-        type: string
-      reuse_run_id:
-        description: >-
-          Completed run ID supplying packages for platforms disabled below
-        required: false
-        type: string
-      dependency_reuse_run_id:
-        description: >-
-          Earlier run ID supplying completed macOS dependency shards; missing
-          shards fall back to source builds
+        description: "Optional release tag, for example v4.2.1-r16"
         required: false
         type: string
       build_windows:
-        description: Build Windows x64 instead of reusing its package
+        description: "Build Windows x64"
         required: true
         default: true
         type: boolean
       build_macos_intel:
-        description: Build macOS Intel instead of reusing its package
+        description: "Build macOS Intel"
         required: true
         default: true
         type: boolean
       build_macos_arm64:
-        description: Build macOS Apple Silicon instead of reusing its package
+        description: "Build macOS Apple Silicon"
         required: true
         default: true
         type: boolean
   push:
     tags:
-      - "v*"
+      - "v4.*"
   schedule:
-    # 每周一检查一次上游；手动运行可随时重新构建当前最新稳定版。
-    - cron: "17 2 * * 1"
+    - cron: "23 2 * * 1"
 
 permissions:
-  actions: write
-  contents: write
+  contents: read
 
 concurrency:
-  group: qgis-plus-${{ github.ref }}
+  group: qgisplus-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
+
+env:
+  QT_VERSION: "6.8.3"
+  PYTHON_VERSION: "3.11"
+  AQT_VERSION: "3.3.0"
 
 jobs:
   versions:
     name: Resolve stable releases
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     outputs:
       qgis_tag: ${{ steps.releases.outputs.qgis_tag }}
       qgis_version: ${{ steps.releases.outputs.qgis_version }}
       qlementine_tag: ${{ steps.releases.outputs.qlementine_tag }}
-      qlementine_version: ${{ steps.releases.outputs.qlementine_version }}
-      release_tag: ${{ steps.releases.outputs.release_tag }}
-      reuse_run_id: ${{ steps.build_plan.outputs.reuse_run_id }}
-      dependency_reuse_run_id: >-
-        ${{ steps.build_plan.outputs.dependency_reuse_run_id }}
-      build_windows: ${{ steps.build_plan.outputs.build_windows }}
-      build_macos: ${{ steps.build_plan.outputs.build_macos }}
-      build_macos_intel: ${{ steps.build_plan.outputs.build_macos_intel }}
-      build_macos_arm64: ${{ steps.build_plan.outputs.build_macos_arm64 }}
-      reuse_windows: ${{ steps.build_plan.outputs.reuse_windows }}
-      reuse_macos_intel: ${{ steps.build_plan.outputs.reuse_macos_intel }}
-      reuse_macos_arm64: ${{ steps.build_plan.outputs.reuse_macos_arm64 }}
-      macos_matrix: ${{ steps.build_plan.outputs.macos_matrix }}
-      macos_dependency_matrix: >-
-        ${{ steps.build_plan.outputs.macos_dependency_matrix }}
+      windows_name: ${{ steps.packages.outputs.windows_name }}
+      windows_url: ${{ steps.packages.outputs.windows_url }}
+      windows_checksum_url: ${{ steps.packages.outputs.windows_checksum_url }}
+      macos_name: ${{ steps.packages.outputs.macos_name }}
+      macos_url: ${{ steps.packages.outputs.macos_url }}
+      macos_checksum_url: ${{ steps.packages.outputs.macos_checksum_url }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      package_matrix: ${{ steps.matrix.outputs.package_matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.11"
-      - name: Resolve releases by semantic version
-        id: releases
+          python-version: ${{ env.PYTHON_VERSION }}
+      - id: release
+        name: Resolve requested release tag
+        shell: bash
+        env:
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          release_tag=""
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            release_tag="${INPUT_RELEASE_TAG}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            release_tag="${GITHUB_REF_NAME}"
+          fi
+          echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+      - id: releases
+        name: Resolve QGIS and Qlementine releases
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BUILD_TAG: >-
-            ${{ github.ref_type == 'tag' && github.ref_name ||
-                inputs.release_tag || '' }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
         run: |
-          python scripts/resolve_versions.py \
-            --output versions.json \
-            --build-tag "${BUILD_TAG}"
-          echo "release_tag=${BUILD_TAG}" >> "${GITHUB_OUTPUT}"
-      - name: Resolve platform build and reuse plan
-        id: build_plan
+          arguments=(--github-output "${GITHUB_OUTPUT}")
+          if [[ -n "${RELEASE_TAG}" ]]; then
+            arguments+=(--build-tag "${RELEASE_TAG}")
+          fi
+          python scripts/resolve_versions.py "${arguments[@]}"
+      - id: packages
+        name: Resolve official binary packages
+        shell: bash
+        run: |
+          python scripts/resolve_binary_packages.py \
+            --qgis-version "${{ steps.releases.outputs.qgis_version }}" \
+            --github-output "${GITHUB_OUTPUT}"
+      - id: matrix
+        name: Resolve selected platforms
+        shell: bash
         env:
-          REUSE_RUN_ID: ${{ inputs.reuse_run_id || '' }}
-          DEPENDENCY_REUSE_RUN_ID: >-
-            ${{ inputs.dependency_reuse_run_id || '' }}
-          BUILD_WINDOWS: ${{ inputs.build_windows || false }}
-          BUILD_MACOS_INTEL: ${{ inputs.build_macos_intel || false }}
-          BUILD_MACOS_ARM64: ${{ inputs.build_macos_arm64 || false }}
-        run: >-
-          python scripts/resolve_build_plan.py
-          --event-name "${GITHUB_EVENT_NAME}"
-          --reuse-run-id "${REUSE_RUN_ID}"
-          --dependency-reuse-run-id "${DEPENDENCY_REUSE_RUN_ID}"
-          --build-windows "${BUILD_WINDOWS}"
-          --build-macos-intel "${BUILD_MACOS_INTEL}"
-          --build-macos-arm64 "${BUILD_MACOS_ARM64}"
-          --output build-plan.json
-      - name: Validate integration scripts
-        run: python -m unittest discover -s tests -p "test_*.py" -v
-      - name: Show selected versions and build plan
-        run: cat versions.json build-plan.json
+          BUILD_WINDOWS: ${{ inputs.build_windows }}
+          BUILD_MACOS_INTEL: ${{ inputs.build_macos_intel }}
+          BUILD_MACOS_ARM64: ${{ inputs.build_macos_arm64 }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
+          if [[ -n "${RELEASE_TAG}" ]]; then
+            BUILD_WINDOWS=true
+            BUILD_MACOS_INTEL=true
+            BUILD_MACOS_ARM64=true
+          fi
+          python scripts/resolve_package_matrix.py \
+            --event-name "${GITHUB_EVENT_NAME}" \
+            --build-windows "${BUILD_WINDOWS:-true}" \
+            --build-macos-intel "${BUILD_MACOS_INTEL:-true}" \
+            --build-macos-arm64 "${BUILD_MACOS_ARM64:-true}" \
+            --github-output "${GITHUB_OUTPUT}"
 
-  reuse_validation:
-    name: Validate reusable platform packages
+  package:
+    name: ${{ matrix.name }}
     needs: versions
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Validate reuse source and required artifacts
-        if: >-
-          needs.versions.outputs.reuse_windows == 'true' ||
-          needs.versions.outputs.reuse_macos_intel == 'true' ||
-          needs.versions.outputs.reuse_macos_arm64 == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REUSE_RUN_ID: ${{ needs.versions.outputs.reuse_run_id }}
-          QGIS_VERSION: ${{ needs.versions.outputs.qgis_version }}
-          REUSE_WINDOWS: ${{ needs.versions.outputs.reuse_windows }}
-          REUSE_MACOS_INTEL: ${{ needs.versions.outputs.reuse_macos_intel }}
-          REUSE_MACOS_ARM64: ${{ needs.versions.outputs.reuse_macos_arm64 }}
-        run: |
-          test "${REUSE_RUN_ID}" != "${GITHUB_RUN_ID}"
-          source_status="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${REUSE_RUN_ID}" \
-            --jq '.status')"
-          test "${source_status}" = "completed" || {
-            echo "Reuse source run is not completed: ${source_status}" >&2
-            exit 1
-          }
-
-          artifact_rows="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${REUSE_RUN_ID}/artifacts?per_page=100" \
-            --jq '.artifacts[] | "\(.name)\t\(.expired)"')"
-          require_artifact() {
-            local artifact_name="$1"
-            if ! grep -Fqx "${artifact_name}"$'\tfalse' <<< "${artifact_rows}"; then
-              echo "Reusable artifact is missing or expired: ${artifact_name}" >&2
-              exit 1
-            fi
-          }
-
-          if [[ "${REUSE_WINDOWS}" = true ]]; then
-            require_artifact "QGISPlus-${QGIS_VERSION}-windows-x64"
-          fi
-          if [[ "${REUSE_MACOS_INTEL}" = true ]]; then
-            require_artifact "QGISPlus-${QGIS_VERSION}-macos-intel"
-          fi
-          if [[ "${REUSE_MACOS_ARM64}" = true ]]; then
-            require_artifact "QGISPlus-${QGIS_VERSION}-macos-arm64"
-          fi
-
-  windows_environment:
-    name: Validate Windows process launchers
-    needs: [versions, reuse_validation]
-    if: needs.versions.outputs.build_windows == 'true'
-    runs-on: windows-2022
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.11"
-
-      - name: Verify native Python can launch Git Bash
-        shell: bash
-        run: |
-          watchdog_python="$(command -v python)"
-          watchdog_bash="$(cygpath -w "${BASH}")"
-          echo "Watchdog Python: ${watchdog_python}"
-          echo "Git Bash: ${watchdog_bash}"
-          "${watchdog_python}" --version
-          # BASH_VERSION intentionally belongs to the child Git Bash.
-          # shellcheck disable=SC2016
-          "${watchdog_python}" scripts/run_with_idle_timeout.py \
-            --idle-timeout 30 -- \
-            "${watchdog_bash}" -c \
-            'test -n "${BASH_VERSION}" && printf "%s\n" "Git Bash child OK"'
-          "${watchdog_python}" scripts/run_with_idle_timeout.py \
-            --idle-timeout 30 -- \
-            "${watchdog_bash}" -n scripts/configure_windows_qgis.sh
-
-      - name: Cancel the entire workflow after an environment failure
-        if: ${{ failure() && !cancelled() }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/cancel_workflow.sh
-
-  macos_environment:
-    name: Validate macOS ${{ matrix.name }} toolchain
-    needs: [versions, reuse_validation]
-    if: needs.versions.outputs.build_macos == 'true'
+    strategy:
+      fail-fast: true
+      matrix: ${{ fromJSON(needs.versions.outputs.package_matrix) }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: true
-      matrix: ${{ fromJSON(needs.versions.outputs.macos_matrix) }}
-    env:
-      GCC_VERSION: "15"
-      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Validate architecture and Monterey compiler target
-        run: |
-          test "$(uname -m)" = "${{ matrix.arch }}"
-          smoke_root="$(mktemp -d "${RUNNER_TEMP}/qgisplus-toolchain.XXXXXX")"
-          trap 'rm -rf "${smoke_root}"' EXIT
-          printf '%s\n' 'int main() { return 0; }' > "${smoke_root}/main.cpp"
-          xcrun clang++ \
-            -arch "${{ matrix.arch }}" \
-            -mmacosx-version-min="${MACOSX_DEPLOYMENT_TARGET}" \
-            "${smoke_root}/main.cpp" \
-            -o "${smoke_root}/smoke"
-          min_os="$(xcrun vtool -show-build "${smoke_root}/smoke" | \
-            awk '$1 == "minos" { print $2; exit }')"
-          test "${min_os}" = "${MACOSX_DEPLOYMENT_TARGET}"
-
-      - name: Validate pinned gfortran toolchain
-        run: |
-          brew install "gcc@${GCC_VERSION}"
-          bash scripts/configure_macos_toolchain.sh
-
-      - name: Cancel the entire workflow after an environment failure
-        if: ${{ failure() && !cancelled() }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/cancel_workflow.sh
-
-  windows_dependencies:
-    name: Build fresh Windows dependencies (${{ matrix.shard }})
-    needs: [versions, windows_environment]
-    if: needs.versions.outputs.build_windows == 'true'
-    runs-on: windows-2022
-    timeout-minutes: 350
-    strategy:
-      fail-fast: true
-      matrix:
-        shard: [base, geo, python, qt]
-    env:
-      # QGIS 的测试基准文件名很长；使用盘符根目录附近的源码路径，避免
-      # Windows checkout 和后续 vcpkg/CMake 路径超过 Win32 限制。
-      UPSTREAM_ROOT: D:/u
-      QGIS_SOURCE: D:/u/QGIS
-      VCPKG_BINARY_CACHE_ROOT: D:/vcpkg-binary-cache
-      VCPKG_RESTORED_BINARY_CACHE_ROOT: D:/vcpkg-restored-binary-cache
-      VCPKG_INSTALL_ROOT: D:/vcpkg-installed
-      VCPKG_MANIFEST_ROOT: D:/vcpkg-manifest
-      VCPKG_TRIPLET: x64-windows-release
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Keep Python temporary files on the runner work drive
-        shell: pwsh
-        run: |
-          # Versioneer 会对 tempfile 与源码计算相对路径，两者必须位于同一盘。
-          $tempRoot = $env:RUNNER_TEMP
-          New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
-          "TEMP=$tempRoot" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "TMP=$tempRoot" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "TMPDIR=$tempRoot" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
+      - name: Check out Qlementine release
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: oclero/qlementine
+          ref: ${{ needs.versions.outputs.qlementine_tag }}
+          path: upstream/qlementine
+          fetch-depth: 1
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install lightweight build tools
+        run: python -m pip install --disable-pip-version-check aqtinstall==${{ env.AQT_VERSION }} ninja
 
-      - name: Prepare patched upstream sources
-        shell: bash
-        run: >-
-          python scripts/prepare_source.py
-          --output "${UPSTREAM_ROOT}"
-          --qgis-tag "${{ needs.versions.outputs.qgis_tag }}"
-          --qlementine-tag "${{ needs.versions.outputs.qlementine_tag }}"
-
-      - name: Install CMake and Ninja
-        uses: lukka/get-cmake@f5b8fbb4d77cec1acc5a5f9f0df4beffaf5d98d9
-        with:
-          cmakeVersion: 3.31.6
-
-      - name: Enable MSVC environment
-        uses: TheMrMilchmann/setup-msvc-dev@79dac248aac9d0059f86eae9d8b5bfab4e95e97c # v4.0.0
-        with:
-          arch: x64
-
-      - name: Set up QGIS vcpkg on the runner work drive
-        shell: powershell
-        run: |
-          $drive = Split-Path -Qualifier $env:RUNNER_TEMP
-          $vcpkgRoot = "$drive/.vcpkg"
-          $buildtreesRoot = "$drive/src"
-          $registriesRoot = Join-Path $vcpkgRoot "registries"
-          $downloadsRoot = Join-Path $vcpkgRoot "downloads"
-          $binaryCacheRoot = $env:VCPKG_BINARY_CACHE_ROOT
-
-          $env:VCPKG_ROOT = $vcpkgRoot
-          $env:X_VCPKG_REGISTRIES_CACHE = $registriesRoot
-          $env:VCPKG_DOWNLOADS = $downloadsRoot
-          New-Item `
-            -ItemType Directory `
-            -Force `
-            -Path `
-              $env:TEMP, `
-              $buildtreesRoot, `
-              $registriesRoot, `
-              $downloadsRoot, `
-              $binaryCacheRoot |
-            Out-Null
-          iex (iwr -useb https://aka.ms/vcpkg-init.ps1)
-          $vcpkgExecutable = Join-Path $vcpkgRoot "vcpkg.exe"
-          if (-not (
-            Test-Path -LiteralPath $vcpkgExecutable -PathType Leaf
-          )) {
-            throw "vcpkg initialization did not create $vcpkgExecutable"
-          }
-
-          $workDrive = (Split-Path -Qualifier $env:GITHUB_WORKSPACE).ToUpper()
-          $tempDrive = (Split-Path -Qualifier $env:TEMP).ToUpper()
-          if ($workDrive -ne $tempDrive -or $workDrive -ne $drive.ToUpper()) {
-            throw "Workspace, TEMP and vcpkg must use one drive: $workDrive, $tempDrive, $drive"
-          }
-
-          "VCPKG_ROOT=$vcpkgRoot" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "VCPKG_BUILDTREES_ROOT=$buildtreesRoot" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "X_VCPKG_REGISTRIES_CACHE=$registriesRoot" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "VCPKG_DOWNLOADS=$downloadsRoot" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          $vcpkgRoot |
-            Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Install flex and bison
-        uses: robinraju/release-downloader@28fc21f50d76778e7023361aa1f863e717d3d56f
-        with:
-          repository: lexxmark/winflexbison
-          fileName: "*.zip"
-          tag: v2.5.24
-          extract: true
-
-      - name: Prepare locked dependency shard
-        shell: bash
-        run: |
-          python scripts/prepare_vcpkg_shard.py \
-            --manifest "${QGIS_SOURCE}/vcpkg/vcpkg.json" \
-            --output "${VCPKG_MANIFEST_ROOT}" \
-            --shard "${{ matrix.shard }}" \
-            --feature recommended-features \
-            --feature auth \
-            --feature bindings \
-            --feature exiv2 \
-            --feature gui \
-            --feature qtpositioning \
-            --feature sfcgal
-
-      - name: Restore partial Windows shard from a previous attempt
-        if: github.run_attempt > 1
+      - name: Restore Qt SDK cache
+        id: qt-cache
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.0.3
         with:
-          pattern: >-
-            QGISPlus-partial-vcpkg-${{
-            needs.versions.outputs.qgis_version }}-windows-x64-${{
-            github.run_id }}-${{ matrix.shard }}-attempt-*
-          path: D:/vcpkg-restored-binary-cache
-          merge-multiple: true
-
-      - name: Build dependency shard from source
-        shell: bash
-        env:
-          X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
-          VCPKG_BINARY_SOURCES: >-
-            clear;files,D:/vcpkg-restored-binary-cache,read;files,D:/vcpkg-binary-cache,readwrite
-          VCPKG_RESTORED_BINARY_CACHE: D:/vcpkg-restored-binary-cache
-          VCPKG_WRITABLE_BINARY_CACHE: D:/vcpkg-binary-cache
-          VCPKG_INSTALL_ROOT_TO_RESET: D:/vcpkg-installed
-          VCPKG_IDLE_TIMEOUT_SECONDS: "7200"
-          VCPKG_ASSET_CACHE_IDLE_TIMEOUT_SECONDS: "900"
-          VCPKG_WATCHDOG_PYTHON: python
-        run: |
-          mkdir -p \
-            "${VCPKG_RESTORED_BINARY_CACHE_ROOT}" \
-            "${VCPKG_BINARY_CACHE_ROOT}" \
-            "${VCPKG_BUILDTREES_ROOT}" \
-            "${VCPKG_INSTALL_ROOT}"
-          export VCPKG_BUILDTREES_ROOT_TO_RESET="${VCPKG_BUILDTREES_ROOT}"
-          bash scripts/install_vcpkg_shard.sh \
-            "${VCPKG_ROOT}/vcpkg.exe" install \
-            --x-manifest-root="${VCPKG_MANIFEST_ROOT}" \
-            --x-install-root="${VCPKG_INSTALL_ROOT}" \
-            --triplet="${VCPKG_TRIPLET}" \
-            --host-triplet="${VCPKG_TRIPLET}" \
-            --x-buildtrees-root="${VCPKG_BUILDTREES_ROOT}"
-
-      - name: Upload run-local Windows dependency archives
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: QGISPlus-vcpkg-${{ needs.versions.outputs.qgis_version }}-windows-x64-${{ github.run_id }}-${{ matrix.shard }}
-          path: D:/vcpkg-binary-cache
-          if-no-files-found: error
-          include-hidden-files: true
-          compression-level: 0
-          retention-days: 7
-
-      - name: Preserve partial Windows dependency archives
-        if: ${{ failure() && !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: >-
-            QGISPlus-partial-vcpkg-${{
-            needs.versions.outputs.qgis_version }}-windows-x64-${{
-            github.run_id }}-${{ matrix.shard }}-attempt-${{
-            github.run_attempt }}
-          path: D:/vcpkg-binary-cache
-          if-no-files-found: warn
-          include-hidden-files: true
-          compression-level: 0
-          retention-days: 7
-
-      - name: Cancel the entire workflow after a dependency failure
-        if: ${{ failure() && !cancelled() }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/cancel_workflow.sh
-
-  windows_build:
-    name: Build Windows x64 runtime
-    needs: [versions, windows_dependencies]
-    if: needs.versions.outputs.build_windows == 'true'
-    runs-on: windows-2022
-    timeout-minutes: 350
-    env:
-      UPSTREAM_ROOT: D:/u
-      QGIS_SOURCE: D:/u/QGIS
-      QLEMENTINE_SOURCE: D:/u/qlementine
-      QGIS_BUILD: D:/b/qgis
-      STYLE_BUILD: D:/b/style
-      QGIS_RUNTIME: D:/qgisplus-runtime
-      VCPKG_BINARY_CACHE_ROOT: D:/vcpkg-binary-cache
-      VCPKG_TRIPLET: x64-windows-release
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Keep Python temporary files on the runner work drive
+          path: .cache/Qt
+          key: qgisplus-qt-${{ runner.os }}-${{ matrix.arch }}-${{ env.QT_VERSION }}-${{ matrix.qt_arch }}
+      - name: Install or validate Qt on Windows
+        if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          $tempRoot = $env:RUNNER_TEMP
-          New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
-          "TEMP=$tempRoot" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "TMP=$tempRoot" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "TMPDIR=$tempRoot" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.11"
-
-      - name: Prepare patched upstream sources
+          $qtRoot = Join-Path $env:GITHUB_WORKSPACE ".cache/Qt/$env:QT_VERSION/msvc2022_64"
+          if (-not (Test-Path -LiteralPath "$qtRoot/bin/Qt6Core.dll" -PathType Leaf)) {
+            Remove-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE ".cache/Qt") -Recurse -Force -ErrorAction SilentlyContinue
+            python -m aqt install-qt windows desktop $env:QT_VERSION win64_msvc2022_64 --outputdir "$env:GITHUB_WORKSPACE/.cache/Qt"
+          }
+          if (-not (Test-Path -LiteralPath "$qtRoot/bin/Qt6Core.dll" -PathType Leaf)) {
+            throw "Qt SDK validation failed: $qtRoot"
+          }
+          "QT_ROOT=$qtRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Install or validate Qt on macOS
+        if: startsWith(matrix.platform, 'macos-')
         shell: bash
-        run: >-
-          python scripts/prepare_source.py
-          --output "${UPSTREAM_ROOT}"
-          --qgis-tag "${{ needs.versions.outputs.qgis_tag }}"
-          --qlementine-tag "${{ needs.versions.outputs.qlementine_tag }}"
-
-      - name: Install CMake and Ninja
-        uses: lukka/get-cmake@f5b8fbb4d77cec1acc5a5f9f0df4beffaf5d98d9
-        with:
-          cmakeVersion: 3.31.6
-
-      - name: Enable MSVC environment
-        uses: TheMrMilchmann/setup-msvc-dev@79dac248aac9d0059f86eae9d8b5bfab4e95e97c # v4.0.0
-        with:
-          arch: x64
-
-      - name: Set up QGIS vcpkg on the runner work drive
-        shell: powershell
         run: |
-          $drive = Split-Path -Qualifier $env:RUNNER_TEMP
-          $vcpkgRoot = "$drive/.vcpkg"
-          $buildtreesRoot = "$drive/src"
-          $registriesRoot = Join-Path $vcpkgRoot "registries"
-          $downloadsRoot = Join-Path $vcpkgRoot "downloads"
-          $binaryCacheRoot = $env:VCPKG_BINARY_CACHE_ROOT
-
-          $env:VCPKG_ROOT = $vcpkgRoot
-          $env:X_VCPKG_REGISTRIES_CACHE = $registriesRoot
-          $env:VCPKG_DOWNLOADS = $downloadsRoot
-          New-Item `
-            -ItemType Directory `
-            -Force `
-            -Path `
-              $buildtreesRoot, `
-              $env:TEMP, `
-              $registriesRoot, `
-              $downloadsRoot, `
-              $binaryCacheRoot |
-            Out-Null
-          iex (iwr -useb https://aka.ms/vcpkg-init.ps1)
-          $vcpkgExecutable = Join-Path $vcpkgRoot "vcpkg.exe"
-          if (-not (
-            Test-Path -LiteralPath $vcpkgExecutable -PathType Leaf
-          )) {
-            throw "vcpkg initialization did not create $vcpkgExecutable"
-          }
-
-          $workDrive = (Split-Path -Qualifier $env:GITHUB_WORKSPACE).ToUpper()
-          $tempDrive = (Split-Path -Qualifier $env:TEMP).ToUpper()
-          if ($workDrive -ne $tempDrive -or $workDrive -ne $drive.ToUpper()) {
-            throw "Workspace, TEMP and vcpkg must use one drive: $workDrive, $tempDrive, $drive"
-          }
-
-          "VCPKG_ROOT=$vcpkgRoot" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "VCPKG_BUILDTREES_ROOT=$buildtreesRoot" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "X_VCPKG_REGISTRIES_CACHE=$registriesRoot" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "VCPKG_DOWNLOADS=$downloadsRoot" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          $vcpkgRoot |
-            Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-          Write-Host "vcpkg root: $vcpkgRoot"
-          Write-Host "vcpkg buildtrees: $buildtreesRoot"
-          Write-Host "vcpkg registries: $registriesRoot"
-          Write-Host "vcpkg downloads: $downloadsRoot"
-          Write-Host "vcpkg binary cache: $binaryCacheRoot"
-          Get-PSDrive -PSProvider FileSystem |
-            Format-Table Name, Used, Free, Root
-
-      - name: Download this run's Windows dependency archives
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: QGISPlus-vcpkg-${{ needs.versions.outputs.qgis_version }}-windows-x64-${{ github.run_id }}-*
-          path: D:/vcpkg-shards
-
-      - name: Use only this run's dependency archives
-        shell: pwsh
-        run: |
-          $cacheDirectories = @(
-            Get-ChildItem -LiteralPath D:/vcpkg-shards -Directory
-          )
-          if ($cacheDirectories.Count -ne 4) {
-            throw "Expected four dependency shards, found $($cacheDirectories.Count)"
-          }
-
-          $sources = [System.Collections.Generic.List[string]]::new()
-          $sources.Add("clear")
-          foreach ($directory in $cacheDirectories) {
-            $path = $directory.FullName.Replace('\', '/')
-            $sources.Add("files,$path,read")
-          }
-          $sources.Add("files,D:/vcpkg-binary-cache,readwrite")
-          "VCPKG_BINARY_SOURCES=$($sources -join ';')" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Install flex and bison
-        uses: robinraju/release-downloader@28fc21f50d76778e7023361aa1f863e717d3d56f
-        with:
-          repository: lexxmark/winflexbison
-          fileName: "*.zip"
-          tag: v2.5.24
-          extract: true
-
-      - name: Configure QGIS and dependencies
-        shell: bash
-        env:
-          X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
-        run: |
-          watchdog_python="$(command -v python)"
-          watchdog_bash="$(cygpath -w "${BASH}")"
-          echo "Using watchdog Python: ${watchdog_python}"
-          echo "Using Git Bash: ${watchdog_bash}"
-          "${watchdog_python}" --version
-
-          configure_qgis() {
-            "${watchdog_python}" scripts/run_with_idle_timeout.py \
-              --idle-timeout 7200 \
-              --asset-cache-idle-timeout 900 -- \
-              "${watchdog_bash}" scripts/configure_windows_qgis.sh
-          }
-
-          configured=false
-          for attempt in 1 2; do
-            status=0
-            if configure_qgis; then
-              configured=true
-              break
-            else
-              status=$?
-            fi
-            if (( attempt == 2 )); then
-              break
-            fi
-            if (( status == 125 )); then
-              unset X_VCPKG_ASSET_SOURCES
-              echo "::warning::QGIS configuration became idle; retrying without the vcpkg asset cache"
-            else
-              echo "::warning::QGIS dependency configuration failed; retrying from the resumable vcpkg state"
-            fi
-            rm -f "${QGIS_BUILD}/CMakeCache.txt"
-            rm -rf "${QGIS_BUILD}/CMakeFiles"
-            sleep 10
-          done
-          if [[ "${configured}" != true ]]; then
-            exit 1
+          qt_root="${GITHUB_WORKSPACE}/.cache/Qt/${QT_VERSION}/macos"
+          if [[ ! -x "${qt_root}/bin/qtpaths" ]]; then
+            rm -rf "${GITHUB_WORKSPACE}/.cache/Qt"
+            python -m aqt install-qt mac desktop "${QT_VERSION}" clang_64 \
+              --outputdir "${GITHUB_WORKSPACE}/.cache/Qt"
           fi
+          test -x "${qt_root}/bin/qtpaths"
+          echo "QT_ROOT=${qt_root}" >> "${GITHUB_ENV}"
 
-      - name: Build Qlementine style plugin with QGIS Qt
-        shell: bash
+      - name: Configure and build Windows overlay
+        if: matrix.platform == 'windows'
+        shell: pwsh
         run: |
-          cmake -S "${GITHUB_WORKSPACE}" -B "${STYLE_BUILD}" -G Ninja \
-            -D CMAKE_BUILD_TYPE=Release \
-            -D CMAKE_PREFIX_PATH="${QGIS_BUILD}/vcpkg_installed/${VCPKG_TRIPLET}" \
-            -D QGISPLUS_QLEMENTINE_SOURCE_DIR="${QLEMENTINE_SOURCE}" \
+          cmake -S . -B build -G Ninja `
+            -D CMAKE_BUILD_TYPE=Release `
+            -D CMAKE_PREFIX_PATH="$env:QT_ROOT" `
+            -D QGISPLUS_QLEMENTINE_SOURCE_DIR="$env:GITHUB_WORKSPACE/upstream/qlementine" `
             -D QGISPLUS_QLEMENTINE_TAG="${{ needs.versions.outputs.qlementine_tag }}"
-          cmake --build "${STYLE_BUILD}" --config Release
-          qt_runtime_bin="$(cygpath -u \
-            "${QGIS_BUILD}/vcpkg_installed/${VCPKG_TRIPLET}/bin")"
-          export PATH="${qt_runtime_bin}:${PATH}"
-          ctest --test-dir "${STYLE_BUILD}" -C Release --output-on-failure
-
-          STYLE_PLUGIN="$(find "${STYLE_BUILD}/plugins/styles" \
-            -type f -iname 'qgisplusstyle.dll' -print -quit)"
-          test -n "${STYLE_PLUGIN}"
-          cmake -D "QGISPLUS_STYLE_PLUGIN=${STYLE_PLUGIN}" "${QGIS_BUILD}"
-
-      - name: Build QGIS+
+          cmake --build build --parallel 2
+          ctest --test-dir build -C Release --output-on-failure
+      - name: Configure and build macOS overlay
+        if: startsWith(matrix.platform, 'macos-')
         shell: bash
-        run: cmake --build "${QGIS_BUILD}" --config Release
+        run: |
+          cmake -S . -B build -G Ninja \
+            -D CMAKE_BUILD_TYPE=Release \
+            -D CMAKE_PREFIX_PATH="${QT_ROOT}" \
+            -D CMAKE_OSX_ARCHITECTURES="${{ matrix.arch }}" \
+            -D CMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+            -D QGISPLUS_QLEMENTINE_SOURCE_DIR="${GITHUB_WORKSPACE}/upstream/qlementine" \
+            -D QGISPLUS_QLEMENTINE_TAG="${{ needs.versions.outputs.qlementine_tag }}"
+          cmake --build build --parallel 2
+          ctest --test-dir build --output-on-failure
 
-      - name: Stage and verify Windows runtime
+      - name: Restore official QGIS installer cache
+        continue-on-error: true
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.0.3
+        with:
+          path: .cache/qgis-installer
+          key: qgisplus-official-${{ matrix.qt_host }}-${{ needs.versions.outputs.qgis_version }}
+      - name: Download verified Windows MSI
+        if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          cmake --install "$env:QGIS_BUILD" `
-            --config Release `
-            --prefix "$env:QGIS_RUNTIME"
-          if ($LASTEXITCODE -ne 0) {
-            throw "QGIS runtime installation failed with exit code $LASTEXITCODE"
-          }
-
-          $requiredFiles = @(
-            "$env:QGIS_RUNTIME/bin/QGIS+.exe"
-            "$env:QGIS_RUNTIME/bin/qgis_process.exe"
-            "$env:QGIS_RUNTIME/bin/Qt6/plugins/styles/qgisplusstyle.dll"
-            "$env:QGIS_RUNTIME/bin/qtplugins/styles/qgisplusstyle.dll"
-          )
-          foreach ($requiredFile in $requiredFiles) {
-            if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
-              throw "Staged QGIS runtime is missing: $requiredFile"
-            }
-          }
-
-          & "$env:QGIS_RUNTIME/bin/qgis_process.exe" --version
-          if ($LASTEXITCODE -ne 0) {
-            throw "The staged qgis_process executable failed its version check"
-          }
-
-          $runtimeSize = (
-            Get-ChildItem -LiteralPath "$env:QGIS_RUNTIME" -File -Recurse |
-              Measure-Object -Property Length -Sum
-          ).Sum
-          Write-Host "Staged runtime size: $runtimeSize bytes"
-
-      - name: Upload staged Windows runtime
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: QGISPlus-runtime-${{ needs.versions.outputs.qgis_version }}-windows-x64
-          path: D:/qgisplus-runtime
-          if-no-files-found: error
-          include-hidden-files: true
-          compression-level: 6
-          retention-days: 3
-
-      - name: Cancel the entire workflow after a Windows build failure
-        if: ${{ failure() && !cancelled() }}
+          python scripts/download_verified.py `
+            --url "${{ needs.versions.outputs.windows_url }}" `
+            --checksum-url "${{ needs.versions.outputs.windows_checksum_url }}" `
+            --output ".cache/qgis-installer/${{ needs.versions.outputs.windows_name }}"
+      - name: Download verified macOS DMG
+        if: startsWith(matrix.platform, 'macos-')
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/cancel_workflow.sh
+        run: |
+          python scripts/download_verified.py \
+            --url "${{ needs.versions.outputs.macos_url }}" \
+            --checksum-url "${{ needs.versions.outputs.macos_checksum_url }}" \
+            --output ".cache/qgis-installer/${{ needs.versions.outputs.macos_name }}"
 
-  windows_package:
-    name: Package and test Windows x64 installer
-    needs: [versions, windows_build]
-    if: needs.versions.outputs.build_windows == 'true'
-    runs-on: windows-2022
-    timeout-minutes: 90
-    env:
-      IFW_PACKAGE_ROOT: D:/qgisplus-ifw
-      QGIS_RUNTIME: D:/qgisplus-ifw/packages/org.qgisplus.desktop/data
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.11"
-
-      - name: Download staged Windows runtime
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: QGISPlus-runtime-${{ needs.versions.outputs.qgis_version }}-windows-x64
-          path: D:/qgisplus-ifw/packages/org.qgisplus.desktop/data
-
-      - name: Prepare Qt Installer Framework metadata
+      - name: Extract and stage official Windows runtime
+        if: matrix.platform == 'windows'
         shell: pwsh
         run: |
+          $ifwRoot = Join-Path $env:RUNNER_TEMP "qgisplus-ifw"
+          $runtime = Join-Path $ifwRoot "packages/org.qgisplus.desktop/data"
+          New-Item -ItemType Directory -Force -Path $runtime | Out-Null
+          $msi = Resolve-Path ".cache/qgis-installer/${{ needs.versions.outputs.windows_name }}"
+          & msiexec.exe /a $msi /qn "TARGETDIR=$runtime"
+          if ($LASTEXITCODE -notin @(0, 3010)) {
+            throw "Administrative MSI extraction failed with exit code $LASTEXITCODE"
+          }
+          python scripts/stage_windows_binary.py `
+            --runtime $runtime `
+            --launcher "build/launcher/QGIS+.exe" `
+            --style-plugin "build/plugins/styles/qgisplusstyle.dll"
           python scripts/prepare_ifw_package.py `
-            --runtime "$env:QGIS_RUNTIME" `
-            --output "$env:IFW_PACKAGE_ROOT" `
+            --runtime $runtime `
+            --output $ifwRoot `
             --version "${{ needs.versions.outputs.qgis_version }}" `
-            --release-date "$(Get-Date -Format yyyy-MM-dd)" `
             --license LICENSE `
             --install-script packaging/ifw/installscript.qs
-
-      - name: Install Qt Installer Framework 4.7
+          "IFW_ROOT=$ifwRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Restore Qt Installer Framework cache
+        if: matrix.platform == 'windows'
+        continue-on-error: true
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.0.3
+        with:
+          path: .cache/QtIFW
+          key: qgisplus-qtifw-4.7
+      - name: Install or validate Qt Installer Framework
+        if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          python -m pip install --disable-pip-version-check aqtinstall==3.3.0
-          python -m aqt install-tool `
-            windows desktop tools_ifw qt.tools.ifw.47 `
-            --outputdir "$env:RUNNER_TEMP/QtIFW"
-
-          $ifwBin = "$env:RUNNER_TEMP/QtIFW/Tools/QtInstallerFramework/4.7/bin"
-          $requiredTools = @("binarycreator.exe", "installerbase.exe")
-          foreach ($tool in $requiredTools) {
-            if (-not (Test-Path -LiteralPath "$ifwBin/$tool" -PathType Leaf)) {
-              throw "Qt Installer Framework tool is missing: $ifwBin/$tool"
-            }
+          $ifwRoot = Join-Path $env:GITHUB_WORKSPACE ".cache/QtIFW"
+          $binaryCreator = Join-Path $ifwRoot "Tools/QtInstallerFramework/4.7/bin/binarycreator.exe"
+          if (-not (Test-Path -LiteralPath $binaryCreator -PathType Leaf)) {
+            Remove-Item -LiteralPath $ifwRoot -Recurse -Force -ErrorAction SilentlyContinue
+            python -m aqt install-tool windows desktop tools_ifw qt.tools.ifw.47 --outputdir $ifwRoot
           }
-          $ifwBin | Out-File `
-            -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Create offline Windows installer
+          if (-not (Test-Path -LiteralPath $binaryCreator -PathType Leaf)) {
+            throw "Qt Installer Framework validation failed"
+          }
+          "BINARYCREATOR=$binaryCreator" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Create Windows offline installer
+        if: matrix.platform == 'windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          $installer = (
-            Resolve-Path dist
-          ).Path + "/QGISPlus-${{ needs.versions.outputs.qgis_version }}-windows-x64-setup.exe"
-          $ifwBin = "$env:RUNNER_TEMP/QtIFW/Tools/QtInstallerFramework/4.7/bin"
-          $log = "$env:RUNNER_TEMP/qtifw-binarycreator.log"
-
-          & "$ifwBin/binarycreator.exe" `
-            --offline-only `
-            -t "$ifwBin/installerbase.exe" `
-            -p "$env:IFW_PACKAGE_ROOT/packages" `
-            -c "$env:IFW_PACKAGE_ROOT/config/config.xml" `
-            "$installer" 2>&1 | Tee-Object -FilePath $log
-          if ($LASTEXITCODE -ne 0) {
-            throw "QtIFW binarycreator failed with exit code $LASTEXITCODE"
-          }
-          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
-            throw "QtIFW did not generate the Windows installer"
+          $output = "dist/QGISPlus-${{ needs.versions.outputs.qgis_version }}-Windows-x64.exe"
+          & $env:BINARYCREATOR -c "$env:IFW_ROOT/config/config.xml" -p "$env:IFW_ROOT/packages" $output
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output -PathType Leaf)) {
+            throw "QtIFW failed to create $output"
           }
 
-      - name: Silently install and verify QGIS+
-        shell: pwsh
-        run: |
-          $installer = Get-ChildItem dist/*-setup.exe | Select-Object -First 1
-          if (-not $installer) {
-            throw "QGIS+ installer was not found"
-          }
-          $testRoot = "$env:RUNNER_TEMP/QGISPlusSmoke"
-
-          & $installer.FullName `
-            --root "$testRoot" `
-            --accept-licenses `
-            --default-answer `
-            --confirm-command `
-            install org.qgisplus.desktop
-          if ($LASTEXITCODE -ne 0) {
-            throw "QGIS+ silent installation failed with exit code $LASTEXITCODE"
-          }
-
-          $qgisProcess = "$testRoot/bin/qgis_process.exe"
-          $stylePlugin = (
-            "$testRoot/bin/Qt6/plugins/styles/qgisplusstyle.dll"
-          )
-          if (-not (Test-Path -LiteralPath $qgisProcess -PathType Leaf)) {
-            throw "Installed qgis_process.exe was not found"
-          }
-          if (-not (Test-Path -LiteralPath $stylePlugin -PathType Leaf)) {
-            throw "Installed Qlementine style plugin was not found"
-          }
-          & $qgisProcess --version
-          if ($LASTEXITCODE -ne 0) {
-            throw "Installed qgis_process.exe failed its version check"
-          }
-
-          $maintenanceTool = "$testRoot/QGISPlusMaintenanceTool.exe"
-          if (-not (Test-Path -LiteralPath $maintenanceTool -PathType Leaf)) {
-            throw "QtIFW maintenance tool was not installed"
-          }
-          & $maintenanceTool `
-            --accept-licenses `
-            --default-answer `
-            --confirm-command `
-            purge
-          if ($LASTEXITCODE -ne 0) {
-            throw "QGIS+ uninstall test failed with exit code $LASTEXITCODE"
-          }
-
-      - name: Upload QtIFW diagnostics
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: QGISPlus-QtIFW-diagnostics-${{ needs.versions.outputs.qgis_version }}
-          path: ${{ runner.temp }}/qtifw-binarycreator.log
-          if-no-files-found: ignore
-          retention-days: 7
-
-      - name: Upload Windows installer
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: QGISPlus-${{ needs.versions.outputs.qgis_version }}-windows-x64
-          path: dist/*-setup.exe
-          if-no-files-found: error
-          compression-level: 0
-
-      - name: Cancel the entire workflow after a packaging failure
-        if: ${{ failure() && !cancelled() }}
+      - name: Extract official macOS application
+        if: startsWith(matrix.platform, 'macos-')
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/cancel_workflow.sh
-
-  macos_dependencies:
-    name: >-
-      Build fresh macOS ${{ matrix.name }} dependencies (${{ matrix.shard }})
-    needs: [versions, macos_environment]
-    if: needs.versions.outputs.build_macos == 'true'
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 350
-    strategy:
-      fail-fast: true
-      matrix: >-
-        ${{ fromJSON(needs.versions.outputs.macos_dependency_matrix) }}
-    env:
-      QGIS_SOURCE: ${{ github.workspace }}/upstream/QGIS
-      FC: gfortran
-      GCC_VERSION: "15"
-      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.11"
-
-      - name: Prepare patched upstream sources
-        run: >-
-          python scripts/prepare_source.py
-          --output upstream
-          --qgis-tag "${{ needs.versions.outputs.qgis_tag }}"
-          --qlementine-tag "${{ needs.versions.outputs.qlementine_tag }}"
-
-      - name: Install build tools
         run: |
-          brew untap aws/tap || true
-          brew install automake bison flex gnu-sed autoconf-archive \
-            nasm libtool fdupes swig mono "gcc@${GCC_VERSION}"
-          {
-            echo "$(brew --prefix bison)/bin"
-            echo "$(brew --prefix flex)/bin"
-            echo "$(brew --prefix libtool)/bin"
-          } >> "${GITHUB_PATH}"
-
-      - name: Isolate Intel dependencies from Homebrew libraries
-        run: bash scripts/isolate_macos_homebrew.sh
-
-      - name: Install CMake and Ninja
-        uses: lukka/get-cmake@f5b8fbb4d77cec1acc5a5f9f0df4beffaf5d98d9
-        with:
-          cmakeVersion: 3.30.4
-
-      - name: Set up pinned QGIS vcpkg
-        run: bash scripts/setup_macos_vcpkg.sh
-
-      - name: Configure gfortran
-        run: bash scripts/configure_macos_toolchain.sh
-
-      - name: Prepare locked dependency shard
+          bash scripts/extract_official_macos.sh \
+            ".cache/qgis-installer/${{ needs.versions.outputs.macos_name }}" \
+            "${RUNNER_TEMP}/official/QGIS.app"
+      - name: Create architecture-specific macOS DMG
+        if: startsWith(matrix.platform, 'macos-')
+        shell: bash
         run: |
-          python scripts/prepare_vcpkg_shard.py \
-            --manifest "${QGIS_SOURCE}/vcpkg/vcpkg.json" \
-            --output "${RUNNER_TEMP}/vcpkg-manifest" \
-            --shard "${{ matrix.shard }}" \
-            --feature recommended-features \
-            --feature auth \
-            --feature bindings \
-            --feature exiv2 \
-            --feature gui \
-            --feature proj-data \
-            --feature qtpositioning \
-            --feature sfcgal
-
-      - name: Reuse completed macOS dependency shard from an earlier run
-        id: reuse_dependency_shard
-        if: needs.versions.outputs.dependency_reuse_run_id != ''
-        continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: >-
-            QGISPlus-vcpkg-${{
-            needs.versions.outputs.qgis_version }}-macos-${{
-            matrix.artifact_arch }}-${{
-            needs.versions.outputs.dependency_reuse_run_id }}-${{
-            matrix.shard }}
-          path: ${{ runner.temp }}/vcpkg-binary-cache
-          repository: ${{ github.repository }}
-          github-token: ${{ github.token }}
-          run-id: ${{ needs.versions.outputs.dependency_reuse_run_id }}
-
-      - name: Restore partial macOS shard from a previous attempt
-        if: >-
-          github.run_attempt > 1 &&
-          steps.reuse_dependency_shard.outcome != 'success'
-        continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: >-
-            QGISPlus-partial-vcpkg-${{
-            needs.versions.outputs.qgis_version }}-macos-${{
-            matrix.artifact_arch }}-${{ github.run_id }}-${{
-            matrix.shard }}-attempt-*
-          path: ${{ runner.temp }}/vcpkg-restored-binary-cache
-          merge-multiple: true
-
-      - name: Build dependency shard from source
-        if: steps.reuse_dependency_shard.outcome != 'success'
-        env:
-          X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
-          VCPKG_BINARY_SOURCES: >-
-            clear;files,${{ runner.temp }}/vcpkg-restored-binary-cache,read;files,${{ runner.temp }}/vcpkg-binary-cache,readwrite
-          VCPKG_RESTORED_BINARY_CACHE: ${{ runner.temp }}/vcpkg-restored-binary-cache
-          VCPKG_WRITABLE_BINARY_CACHE: ${{ runner.temp }}/vcpkg-binary-cache
-          VCPKG_INSTALL_ROOT_TO_RESET: ${{ runner.temp }}/vcpkg-installed
-          VCPKG_BUILDTREES_ROOT_TO_RESET: ${{ runner.temp }}/vcpkg-buildtrees
-          VCPKG_IDLE_TIMEOUT_SECONDS: "7200"
-          VCPKG_ASSET_CACHE_IDLE_TIMEOUT_SECONDS: "900"
-        run: |
-          mkdir -p \
-            "${RUNNER_TEMP}/vcpkg-restored-binary-cache" \
-            "${RUNNER_TEMP}/vcpkg-binary-cache" \
-            "${RUNNER_TEMP}/vcpkg-buildtrees" \
-            "${RUNNER_TEMP}/vcpkg-installed"
-          bash scripts/install_vcpkg_shard.sh \
-            "${VCPKG_ROOT}/vcpkg" install \
-            --x-manifest-root="${RUNNER_TEMP}/vcpkg-manifest" \
-            --x-install-root="${RUNNER_TEMP}/vcpkg-installed" \
-            --triplet="${{ matrix.triplet }}" \
-            --host-triplet="${{ matrix.triplet }}" \
-            --x-buildtrees-root="${RUNNER_TEMP}/vcpkg-buildtrees"
-
-      - name: Upload run-local macOS dependency archives
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: QGISPlus-vcpkg-${{ needs.versions.outputs.qgis_version }}-macos-${{ matrix.artifact_arch }}-${{ github.run_id }}-${{ matrix.shard }}
-          path: ${{ runner.temp }}/vcpkg-binary-cache
-          if-no-files-found: error
-          include-hidden-files: true
-          compression-level: 0
-          retention-days: 7
-
-      - name: Preserve partial macOS dependency archives
-        if: ${{ failure() && !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: >-
-            QGISPlus-partial-vcpkg-${{
-            needs.versions.outputs.qgis_version }}-macos-${{
-            matrix.artifact_arch }}-${{ github.run_id }}-${{
-            matrix.shard }}-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/vcpkg-binary-cache
-          if-no-files-found: warn
-          include-hidden-files: true
-          compression-level: 0
-          retention-days: 7
-
-      - name: Cancel the entire workflow after a dependency failure
-        if: ${{ failure() && !cancelled() }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/cancel_workflow.sh
-
-  macos:
-    name: macOS ${{ matrix.name }}
-    needs: [versions, macos_dependencies]
-    if: needs.versions.outputs.build_macos == 'true'
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 360
-    strategy:
-      fail-fast: true
-      matrix: ${{ fromJSON(needs.versions.outputs.macos_matrix) }}
-    env:
-      QGIS_SOURCE: ${{ github.workspace }}/upstream/QGIS
-      QLEMENTINE_SOURCE: ${{ github.workspace }}/upstream/qlementine
-      QGIS_BUILD: ${{ github.workspace }}/upstream/QGIS/build
-      STYLE_BUILD: ${{ github.workspace }}/style-build
-      FC: gfortran
-      GCC_VERSION: "15"
-      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.11"
-
-      - name: Prepare patched upstream sources
-        run: >-
-          python scripts/prepare_source.py
-          --output upstream
-          --qgis-tag "${{ needs.versions.outputs.qgis_tag }}"
-          --qlementine-tag "${{ needs.versions.outputs.qlementine_tag }}"
-
-      - name: Validate macOS dependency patches
-        run: |
-          test "$(grep -c 'set(VCPKG_OSX_DEPLOYMENT_TARGET 12.0)' \
-            "${QGIS_SOURCE}/vcpkg/triplets/x64-osx-dynamic-release.cmake")" -eq 1
-          test "$(grep -c 'set(VCPKG_OSX_DEPLOYMENT_TARGET 12.0)' \
-            "${QGIS_SOURCE}/vcpkg/triplets/arm64-osx-dynamic-release.cmake")" -eq 1
-          grep -Fq '# QGIS+ idempotent SIP entry-point wrappers' \
-            "${QGIS_SOURCE}/vcpkg/ports/py-sip/portfile.cmake"
-          grep -Fq '../tools/python3/python3' \
-            "${QGIS_SOURCE}/vcpkg/ports/py-sip/portfile.cmake"
-
-      - name: Install build tools
-        run: |
-          brew untap aws/tap || true
-          brew install automake bison flex gnu-sed autoconf-archive \
-            nasm libtool fdupes swig mono "gcc@${GCC_VERSION}"
-          {
-            echo "$(brew --prefix bison)/bin"
-            echo "$(brew --prefix flex)/bin"
-            echo "$(brew --prefix libtool)/bin"
-          } >> "${GITHUB_PATH}"
-
-      - name: Isolate Intel dependencies from Homebrew libraries
-        run: bash scripts/isolate_macos_homebrew.sh
-
-      - name: Install CMake and Ninja
-        uses: lukka/get-cmake@f5b8fbb4d77cec1acc5a5f9f0df4beffaf5d98d9
-        with:
-          cmakeVersion: 3.30.4
-
-      - name: Set up pinned QGIS vcpkg
-        run: bash scripts/setup_macos_vcpkg.sh
-
-      - name: Configure gfortran
-        run: bash scripts/configure_macos_toolchain.sh
-
-      - name: Download this run's macOS dependency archives
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: QGISPlus-vcpkg-${{ needs.versions.outputs.qgis_version }}-macos-${{ matrix.artifact_arch }}-${{ github.run_id }}-*
-          path: ${{ runner.temp }}/vcpkg-shards
-
-      - name: Use only this run's dependency archives
-        run: |
-          sources="clear"
-          cache_count=0
-          for directory in "${RUNNER_TEMP}/vcpkg-shards"/*; do
-            [[ -d "${directory}" ]] || continue
-            sources+=";files,${directory},read"
-            cache_count=$((cache_count + 1))
-          done
-          if (( cache_count != 4 )); then
-            echo "Expected four dependency shards, found ${cache_count}" >&2
-            exit 1
-          fi
-          mkdir -p "${RUNNER_TEMP}/vcpkg-binary-cache"
-          sources+=";files,${RUNNER_TEMP}/vcpkg-binary-cache,readwrite"
-          echo "VCPKG_BINARY_SOURCES=${sources}" >> "${GITHUB_ENV}"
-
-      - name: Configure QGIS and dependencies
-        env:
-          X_VCPKG_ASSET_SOURCES: x-azurl,https://assetcache.open-vcpkg.org/assetcache,,read
-          VCPKG_TARGET_TRIPLET: ${{ matrix.triplet }}
-          QGISPLUS_MACOS_ARCH: ${{ matrix.arch }}
-          QGISPLUS_MACOS_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
-        run: |
-          configure_qgis() {
-            python3 scripts/run_with_idle_timeout.py \
-              --idle-timeout 7200 \
-              --asset-cache-idle-timeout 900 -- \
-              bash scripts/configure_macos_qgis.sh
-          }
-
-          configured=false
-          for attempt in 1 2; do
-            status=0
-            if configure_qgis; then
-              configured=true
-              break
-            else
-              status=$?
-            fi
-            if (( attempt == 2 )); then
-              break
-            fi
-            if (( status == 125 )); then
-              unset X_VCPKG_ASSET_SOURCES
-              echo "::warning::QGIS configuration became idle; retrying without the vcpkg asset cache"
-            else
-              echo "::warning::QGIS dependency configuration failed; retrying from the resumable vcpkg state"
-            fi
-            rm -f "${QGIS_BUILD}/CMakeCache.txt"
-            rm -rf "${QGIS_BUILD}/CMakeFiles"
-            sleep 10
-          done
-          if [[ "${configured}" != true ]]; then
-            exit 1
-          fi
-
-      - name: Build Qlementine style plugin with QGIS Qt
-        run: |
-          cmake -S "${GITHUB_WORKSPACE}" -B "${STYLE_BUILD}" -G Ninja \
-            -D CMAKE_BUILD_TYPE=Release \
-            -D CMAKE_PREFIX_PATH="${QGIS_BUILD}/vcpkg_installed/${{ matrix.triplet }}" \
-            -D CMAKE_OSX_DEPLOYMENT_TARGET="${{ matrix.deployment_target }}" \
-            -D CMAKE_OSX_ARCHITECTURES="${{ matrix.arch }}" \
-            -D QGISPLUS_QLEMENTINE_SOURCE_DIR="${QLEMENTINE_SOURCE}" \
-            -D QGISPLUS_QLEMENTINE_TAG="${{ needs.versions.outputs.qlementine_tag }}"
-          cmake --build "${STYLE_BUILD}"
-          ctest --test-dir "${STYLE_BUILD}" --output-on-failure
-
-          STYLE_PLUGIN="$(find "${STYLE_BUILD}/plugins/styles" \
-            -type f -iname '*qgisplusstyle*' -print -quit)"
-          test -n "${STYLE_PLUGIN}"
-          cmake -D "QGISPLUS_STYLE_PLUGIN=${STYLE_PLUGIN}" "${QGIS_BUILD}"
-
-      - name: Build and bundle QGIS+
-        run: |
-          cmake --build "${QGIS_BUILD}"
-          cmake --build "${QGIS_BUILD}" --target bundle
-
-      - name: Verify bundled macOS application
-        run: |
-          APP_PATH="$(find "${QGIS_BUILD}/_CPack_Packages/Darwin/External" \
-            -type d -name 'QGIS+.app' -print -quit)"
           mkdir -p dist
-          set -o pipefail
-          bash scripts/verify_macos_bundle.sh \
-            "${APP_PATH}" \
+          output="dist/QGISPlus-${{ needs.versions.outputs.qgis_version }}-${{ matrix.platform }}.dmg"
+          bash scripts/package_macos_binary.sh \
+            "${RUNNER_TEMP}/official/QGIS.app" \
+            "build/plugins/styles/libqgisplusstyle.so" \
+            "build/launcher/QGISPlusLauncher" \
             "${{ matrix.arch }}" \
-            "${{ matrix.deployment_target }}" 2>&1 | \
-            tee "dist/macos-verification-${{ matrix.artifact_arch }}.log"
+            "${{ needs.versions.outputs.qgis_version }}" \
+            "${output}"
+          test -s "${output}"
 
-      - name: Upload macOS verification diagnostics
-        if: always()
+      - name: Upload installable package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: QGISPlus-macOS-diagnostics-${{ matrix.artifact_arch }}
-          path: dist/macos-verification-${{ matrix.artifact_arch }}.log
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Create architecture-specific DMG
-        run: |
-          APP_PATH="$(find "${QGIS_BUILD}/_CPack_Packages/Darwin/External" \
-            -type d -name 'QGIS+.app' -print -quit)"
-          test -n "${APP_PATH}"
-          mkdir -p dist
-          hdiutil create \
-            -volname "QGIS+" \
-            -srcfolder "${APP_PATH}" \
-            -ov -format UDZO \
-            "dist/QGISPlus-${{ needs.versions.outputs.qgis_version }}-macos-${{ matrix.artifact_arch }}.dmg"
-          hdiutil verify \
-            "dist/QGISPlus-${{ needs.versions.outputs.qgis_version }}-macos-${{ matrix.artifact_arch }}.dmg"
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: QGISPlus-${{ needs.versions.outputs.qgis_version }}-macos-${{ matrix.artifact_arch }}
-          path: dist/*.dmg
+          name: ${{ matrix.artifact }}
+          path: dist/*
           if-no-files-found: error
           compression-level: 0
-
-      - name: Cancel the entire workflow after a macOS build failure
-        if: ${{ failure() && !cancelled() }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/cancel_workflow.sh
+          retention-days: 14
 
   release:
     name: Publish tagged build
-    if: >-
-      always() &&
-      needs.versions.outputs.release_tag != '' &&
-      needs.versions.result == 'success' &&
-      needs.reuse_validation.result == 'success' &&
-      (needs.windows_package.result == 'success' ||
-       needs.versions.outputs.reuse_windows == 'true') &&
-      (needs.macos.result == 'success' ||
-       needs.versions.outputs.build_macos == 'false')
-    needs: [versions, reuse_validation, windows_package, macos]
+    needs: [versions, package]
+    if: needs.versions.outputs.release_tag != ''
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
     steps:
-      - name: Download current Windows package
-        if: needs.versions.outputs.build_windows == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Download all platform packages
+        uses: actions/download-artifact@3e5f45ac13d11f351dd7ea2ef4a21ef4880c1755 # v8.0.1
         with:
-          name: QGISPlus-${{ needs.versions.outputs.qgis_version }}-windows-x64
+          pattern: QGISPlus-*
           path: dist
-
-      - name: Reuse Windows package
-        if: needs.versions.outputs.reuse_windows == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: QGISPlus-${{ needs.versions.outputs.qgis_version }}-windows-x64
-          path: dist
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ needs.versions.outputs.reuse_run_id }}
-
-      - name: Download current macOS Intel package
-        if: needs.versions.outputs.build_macos_intel == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: QGISPlus-${{ needs.versions.outputs.qgis_version }}-macos-intel
-          path: dist
-
-      - name: Reuse macOS Intel package
-        if: needs.versions.outputs.reuse_macos_intel == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: QGISPlus-${{ needs.versions.outputs.qgis_version }}-macos-intel
-          path: dist
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ needs.versions.outputs.reuse_run_id }}
-
-      - name: Download current macOS Apple Silicon package
-        if: needs.versions.outputs.build_macos_arm64 == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: QGISPlus-${{ needs.versions.outputs.qgis_version }}-macos-arm64
-          path: dist
-
-      - name: Reuse macOS Apple Silicon package
-        if: needs.versions.outputs.reuse_macos_arm64 == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: QGISPlus-${{ needs.versions.outputs.qgis_version }}-macos-arm64
-          path: dist
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ needs.versions.outputs.reuse_run_id }}
-
-      - name: Verify complete release payload
-        env:
-          QGIS_VERSION: ${{ needs.versions.outputs.qgis_version }}
+          merge-multiple: true
+      - name: Validate complete release payload
+        shell: bash
         run: |
-          expected=(
-            "QGISPlus-${QGIS_VERSION}-windows-x64-setup.exe"
-            "QGISPlus-${QGIS_VERSION}-macos-intel.dmg"
-            "QGISPlus-${QGIS_VERSION}-macos-arm64.dmg"
-          )
-          for package in "${expected[@]}"; do
-            test -s "dist/${package}" || {
-              echo "Missing or empty release package: ${package}" >&2
-              exit 1
-            }
-          done
-          actual_count="$(find dist -maxdepth 1 -type f | wc -l | tr -d ' ')"
-          test "${actual_count}" -eq "${#expected[@]}" || {
-            echo "Expected ${#expected[@]} packages, found ${actual_count}" >&2
+          shopt -s nullglob
+          windows=(dist/*Windows-x64.exe)
+          intel=(dist/*macos-intel.dmg)
+          arm64=(dist/*macos-arm64.dmg)
+          if (( ${#windows[@]} != 1 || ${#intel[@]} != 1 || ${#arm64[@]} != 1 )); then
+            echo "Release requires exactly one package for every platform." >&2
             find dist -maxdepth 1 -type f -print >&2
             exit 1
-          }
-          (
-            cd dist
-            sha256sum "${expected[@]}" > SHA256SUMS.txt
-          )
-      - name: Create release and upload packages
+          fi
+      - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ needs.versions.outputs.release_tag }}
+          QGIS_VERSION: ${{ needs.versions.outputs.qgis_version }}
+        shell: bash
         run: |
-          existing_tag_sha="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" \
-            --jq '.sha' 2>/dev/null || true)"
-          if [[ -n "${existing_tag_sha}" && \
-                "${existing_tag_sha}" != "${GITHUB_SHA}" ]]; then
-            echo "Release tag ${RELEASE_TAG} already points to ${existing_tag_sha}, not ${GITHUB_SHA}" >&2
-            exit 1
-          fi
-          gh release view "${RELEASE_TAG}" >/dev/null 2>&1 || \
-            gh release create "${RELEASE_TAG}" \
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" dist/* --clobber
+          else
+            gh release create "${RELEASE_TAG}" dist/* \
               --target "${GITHUB_SHA}" \
               --title "QGIS+ ${RELEASE_TAG}" \
-              --notes "QGIS ${{ needs.versions.outputs.qgis_version }} with Qlementine ${{ needs.versions.outputs.qlementine_version }}."
-          gh release upload "${RELEASE_TAG}" dist/* --clobber
+              --notes "QGIS+ based on the official QGIS ${QGIS_VERSION} binaries with the Qlementine style enabled by default."
+          fi

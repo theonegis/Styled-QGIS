@@ -27,19 +27,27 @@ def _add_text(parent: ET.Element, name: str, value: str) -> None:
 
 
 def validate_runtime(runtime: Path) -> None:
-    required_files = (
-        runtime / "bin" / "QGIS+.exe",
-        runtime / "bin" / "qgis_process.exe",
-    )
-    for required_file in required_files:
-        if not required_file.is_file():
-            raise RuntimeError(f"Required QGIS runtime file is missing: {required_file}")
+    qgisplus_launcher = runtime / "QGIS+.exe"
+    if not qgisplus_launcher.is_file():
+        raise RuntimeError(
+            f"Required QGIS+ launcher is missing: {qgisplus_launcher}"
+        )
+    launcher_config = runtime / "qgisplus-launcher.txt"
+    if not launcher_config.is_file():
+        raise RuntimeError(
+            f"QGIS launcher configuration is missing: {launcher_config}"
+        )
 
-    style_candidates = (
-        runtime / "bin" / "Qt6" / "plugins" / "styles" / "qgisplusstyle.dll",
-        runtime / "bin" / "qtplugins" / "styles" / "qgisplusstyle.dll",
+    qgis_launchers = (
+        tuple(runtime.rglob("qgis.bat"))
+        + tuple(runtime.rglob("qgis-ltr.bat"))
+        + tuple(runtime.rglob("qgis-bin.exe"))
     )
-    if not any(candidate.is_file() for candidate in style_candidates):
+    if not qgis_launchers:
+        raise RuntimeError("The staged runtime does not contain official QGIS")
+
+    style_candidates = tuple(runtime.rglob("qgisplusstyle.dll"))
+    if not style_candidates:
         raise RuntimeError(
             "Qlementine style plugin is missing from the staged QGIS runtime"
         )

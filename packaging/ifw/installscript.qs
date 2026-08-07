@@ -7,7 +7,7 @@ Component.prototype.createOperations = function() {
     if (systemInfo.productType === "windows") {
         component.addOperation(
             "CreateShortcut",
-            "@TargetDir@/bin/QGIS+.exe",
+            "@TargetDir@/QGIS+.exe",
             "@StartMenuDir@/QGIS+.lnk"
         );
     }

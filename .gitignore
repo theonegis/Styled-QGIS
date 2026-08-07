@@ -33,9 +33,8 @@ CMakeUserPresets.json
 *.vcxproj.filters
 *.vcxproj.user
 
-# Prepared QGIS/Qlementine sources and vcpkg state
+# Checked-out Qlementine source and downloaded binary inputs
 /upstream/
-/vcpkg_installed/
 /downloads/
 /packages/
 

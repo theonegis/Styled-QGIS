@@ -18,11 +18,5 @@ jobs:
           python-version: "3.11"
       - name: Run repository preflight
         run: bash scripts/preflight.sh
-      - name: Resolve current releases
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python scripts/resolve_versions.py
-      - name: Validate patch against current QGIS 4 release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python scripts/prepare_source.py --output upstream
+      - name: Validate official binary naming rules
+        run: python scripts/resolve_binary_packages.py --qgis-version 4.2.1
