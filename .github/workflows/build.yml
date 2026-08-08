@@ -7,6 +7,11 @@ on:
         description: "Optional release tag, for example v4.2.1-r16"
         required: false
         type: string
+      publish_release:
+        description: "Publish a Release after all platforms succeed"
+        required: true
+        default: true
+        type: boolean
       build_windows:
         description: "Build Windows x64"
         required: true
@@ -55,7 +60,8 @@ jobs:
       macos_name: ${{ steps.packages.outputs.macos_name }}
       macos_url: ${{ steps.packages.outputs.macos_url }}
       macos_checksum_url: ${{ steps.packages.outputs.macos_checksum_url }}
-      release_tag: ${{ steps.release.outputs.release_tag }}
+      release_tag: ${{ steps.publish_tag.outputs.release_tag }}
+      publish_release: ${{ steps.release.outputs.publish_release }}
       package_matrix: ${{ steps.matrix.outputs.package_matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -63,30 +69,54 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - id: release
-        name: Resolve requested release tag
+        name: Resolve release intent
         shell: bash
         env:
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+          INPUT_PUBLISH_RELEASE: ${{ inputs.publish_release }}
         run: |
           release_tag=""
+          publish_release=true
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             release_tag="${INPUT_RELEASE_TAG}"
+            publish_release="${INPUT_PUBLISH_RELEASE:-true}"
+            if [[ -n "${release_tag}" ]]; then
+              publish_release=true
+            fi
           elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             release_tag="${GITHUB_REF_NAME}"
           fi
-          echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+          echo "requested_release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+          echo "publish_release=${publish_release}" >> "${GITHUB_OUTPUT}"
       - id: releases
         name: Resolve QGIS and Qlementine releases
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          RELEASE_TAG: ${{ steps.release.outputs.requested_release_tag }}
         run: |
           arguments=(--github-output "${GITHUB_OUTPUT}")
           if [[ -n "${RELEASE_TAG}" ]]; then
             arguments+=(--build-tag "${RELEASE_TAG}")
           fi
           python scripts/resolve_versions.py "${arguments[@]}"
+      - id: publish_tag
+        name: Resolve automatic Release tag
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLISH_RELEASE: ${{ steps.release.outputs.publish_release }}
+          REQUESTED_RELEASE_TAG: ${{ steps.release.outputs.requested_release_tag }}
+        run: |
+          if [[ "${PUBLISH_RELEASE}" != "true" ]]; then
+            echo "release_tag=" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          python scripts/resolve_release_tag.py \
+            --repository "${GITHUB_REPOSITORY}" \
+            --qgis-version "${{ steps.releases.outputs.qgis_version }}" \
+            --requested-tag "${REQUESTED_RELEASE_TAG}" \
+            --github-output "${GITHUB_OUTPUT}"
       - id: packages
         name: Resolve official binary packages
         shell: bash
@@ -101,9 +131,9 @@ jobs:
           BUILD_WINDOWS: ${{ inputs.build_windows }}
           BUILD_MACOS_INTEL: ${{ inputs.build_macos_intel }}
           BUILD_MACOS_ARM64: ${{ inputs.build_macos_arm64 }}
-          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          PUBLISH_RELEASE: ${{ steps.release.outputs.publish_release }}
         run: |
-          if [[ -n "${RELEASE_TAG}" ]]; then
+          if [[ "${PUBLISH_RELEASE}" == "true" ]]; then
             BUILD_WINDOWS=true
             BUILD_MACOS_INTEL=true
             BUILD_MACOS_ARM64=true
@@ -258,9 +288,24 @@ jobs:
           python scripts/stage_windows_binary.py `
             --runtime $runtime `
             --launcher "build/launcher/Release/QGIS+.exe" `
-            --style-plugin "build/plugins/styles/Release/qgisplusstyle.dll"
+            --style-plugin "build/plugins/styles/Release/qgisplusstyle.dll" `
+            --global-settings "packaging/qgisplus-global-settings.ini"
           if ($LASTEXITCODE -ne 0) {
             throw "Windows runtime staging failed with exit code $LASTEXITCODE"
+          }
+          python scripts/verify_qgis_style.py `
+            --launcher "$runtime/QGIS+.exe" `
+            --probe "scripts/qgis_style_probe.py" `
+            --work-dir "$env:RUNNER_TEMP/qgisplus-style-probe"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows Qlementine runtime verification failed"
+          }
+          python scripts/verify_qgis_options_ui.py `
+            --launcher "$runtime/QGIS+.exe" `
+            --probe "scripts/qgis_options_visual_probe.py" `
+            --work-dir "$env:RUNNER_TEMP/qgisplus-options-ui-probe"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows Qlementine Options UI verification failed"
           }
           python scripts/prepare_ifw_package.py `
             --runtime $runtime `

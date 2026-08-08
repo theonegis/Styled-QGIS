@@ -27,6 +27,7 @@ def load_script(name: str):
 binary_packages = load_script("resolve_binary_packages.py")
 package_matrix = load_script("resolve_package_matrix.py")
 release_versions = load_script("resolve_versions.py")
+release_tags = load_script("resolve_release_tag.py")
 verified_download = load_script("download_verified.py")
 windows_stage = load_script("stage_windows_binary.py")
 ifw = load_script("prepare_ifw_package.py")
@@ -71,6 +72,22 @@ class ReleaseVersionTests(unittest.TestCase):
             release_versions._qgis_version_from_build_tag("v4.2.1-r16"),
             (4, 2, 1),
         )
+
+    def test_automatic_release_tag_increments_current_qgis_revision(self) -> None:
+        self.assertEqual(
+            release_tags.next_release_tag(
+                "4.2.1", ["v4.2.1-r14", "v4.2.1-r15", "v4.2.0-r20"]
+            ),
+            "v4.2.1-r16",
+        )
+
+    def test_requested_release_tag_must_match_qgis_version(self) -> None:
+        self.assertEqual(
+            release_tags.next_release_tag("4.2.1", [], "v4.2.1-r20"),
+            "v4.2.1-r20",
+        )
+        with self.assertRaises(ValueError):
+            release_tags.next_release_tag("4.2.1", [], "v4.2.0-r20")
 
 
 class MatrixTests(unittest.TestCase):
@@ -147,11 +164,17 @@ class WindowsStagingTests(unittest.TestCase):
             launcher.write_bytes(b"launcher")
             style = root / "qgisplusstyle.dll"
             style.write_bytes(b"style")
-            installed = windows_stage.stage(runtime, launcher, style)
+            settings = root / "qgisplus-global-settings.ini"
+            settings.write_text("[qgis]\nstyle=Qlementine\n", encoding="utf-8")
+            installed = windows_stage.stage(runtime, launcher, style, settings)
             self.assertEqual(len(installed), 2)
             self.assertTrue((runtime / "QGIS+.exe").is_file())
             self.assertEqual(
                 (runtime / "qgisplus-launcher.txt").read_text(), "bin/qgis.bat"
+            )
+            self.assertEqual(
+                (runtime / "qgisplus-global-settings.ini").read_text(),
+                "[qgis]\nstyle=Qlementine\n",
             )
             self.assertTrue(all(path.read_bytes() == b"style" for path in installed))
 
@@ -166,6 +189,9 @@ class QtIfwTests(unittest.TestCase):
             (runtime / "QGIS+.exe").write_bytes(b"launcher")
             (runtime / "qgisplus-launcher.txt").write_text(
                 "bin/qgis.bat", encoding="utf-8"
+            )
+            (runtime / "qgisplus-global-settings.ini").write_text(
+                "[qgis]\nstyle=Qlementine\n", encoding="utf-8"
             )
             (runtime / "bin" / "qgis.bat").write_text("@echo off\n")
             (runtime / "plugins" / "styles").mkdir(parents=True)
@@ -208,6 +234,10 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("*Windows-x64.exe", self.workflow)
         self.assertIn("*macos-intel.dmg", self.workflow)
         self.assertIn("*macos-arm64.dmg", self.workflow)
+        self.assertIn("publish_release:", self.workflow)
+        self.assertIn("default: true", self.workflow)
+        self.assertIn("resolve_release_tag.py", self.workflow)
+        self.assertIn('PUBLISH_RELEASE}" == "true"', self.workflow)
 
     def test_actions_are_pinned_and_no_custom_cancel_api_exists(self) -> None:
         for line in self.workflow.splitlines():
@@ -261,13 +291,62 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('plugin->create(', smoke_test)
         self.assertNotIn("QStyleFactory::", smoke_test)
 
+        adapter = (ROOT / "src" / "QlementineStylePlugin.cpp").read_text()
+        self.assertIn("QgisCompatibleQlementineStyle", adapter)
+        self.assertIn("if (widget == nullptr)", adapter)
+        self.assertIn("QCommonStyle::sizeFromContents", adapter)
+        self.assertIn("QComboBoxPrivateContainer", adapter)
+        self.assertIn("QCommonStyle::polish", adapter)
+
     def test_macos_plugin_uses_bundled_qgis_qt_frameworks(self) -> None:
         packaging = (ROOT / "scripts" / "package_macos_binary.sh").read_text()
         self.assertIn('lipo "${plugin_path}" -verify_arch "${target_arch}"', packaging)
         self.assertNotIn('lipo -verify_arch "${target_arch}"', packaging)
-        self.assertIn("@loader_path/../../Resources/QGIS.app/Contents/Frameworks", packaging)
+        self.assertIn("Contents/PlugIns/styles", packaging)
+        self.assertIn("@loader_path/../../Frameworks", packaging)
+        self.assertIn("libQt6${module_name}.6.dylib", packaging)
         self.assertIn("install_name_tool -change", packaging)
-        self.assertIn("Style plugin still references an absolute Qt framework path", packaging)
+        self.assertIn("Style plugin still references a Qt framework unavailable", packaging)
+
+    def test_launchers_use_style_override_without_broken_style_arguments(self) -> None:
+        macos = (ROOT / "packaging" / "macos" / "QGISPlusLauncher.cpp").read_text()
+        windows = (ROOT / "packaging" / "windows" / "QGISPlusLauncher.cpp").read_text()
+        self.assertIn('setenv("QT_STYLE_OVERRIDE", "Qlementine"', macos)
+        self.assertIn('"Contents" / "PlugIns"', macos)
+        self.assertIn('"--globalsettingsfile"', macos)
+        self.assertIn('"--profiles-path"', macos)
+        self.assertNotIn('arguments.emplace_back("-style")', macos)
+        self.assertIn('SetEnvironmentVariableW(L"QT_STYLE_OVERRIDE", L"Qlementine")', windows)
+        self.assertIn('L"--globalsettingsfile"', windows)
+        self.assertIn('L"--profiles-path"', windows)
+        self.assertNotIn('L"-style Qlementine"', windows)
+
+        global_settings = (
+            ROOT / "packaging" / "qgisplus-global-settings.ini"
+        ).read_text(encoding="utf-8")
+        self.assertIn("style=Qlementine", global_settings)
+        self.assertIn("UITheme=default", global_settings)
+
+    def test_packages_run_real_qgis_style_verification(self) -> None:
+        packaging = (ROOT / "scripts" / "package_macos_binary.sh").read_text()
+        verifier = (ROOT / "scripts" / "verify_qgis_style.py").read_text()
+        probe = (ROOT / "scripts" / "qgis_style_probe.py").read_text()
+        self.assertIn("verify_qgis_style.py", packaging)
+        self.assertIn("verify_qgis_style.py", self.workflow)
+        self.assertIn("QGISPLUS_STYLE_PROBE_OUTPUT", verifier)
+        self.assertIn('"qlementine"', probe.lower())
+        self.assertIn('result["passed"]', probe)
+
+    def test_packages_verify_options_text_and_combo_width(self) -> None:
+        packaging = (ROOT / "scripts" / "package_macos_binary.sh").read_text()
+        verifier = (ROOT / "scripts" / "verify_qgis_options_ui.py").read_text()
+        probe = (ROOT / "scripts" / "qgis_options_visual_probe.py").read_text()
+        self.assertIn("verify_qgis_options_ui.py", packaging)
+        self.assertIn("verify_qgis_options_ui.py", self.workflow)
+        self.assertIn("disabled_text_contrast", probe)
+        self.assertIn("popup_has_full_width", probe)
+        self.assertIn("menu_checkable_toggle", probe)
+        self.assertIn('result.get("passed", False)', verifier)
 
     def test_windows_waits_for_msi_extraction_and_reads_process_exit_code(self) -> None:
         windows_step = self.workflow.split(

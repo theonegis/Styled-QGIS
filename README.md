@@ -48,7 +48,15 @@ macOS 创建一个轻量的外层 `QGIS+.app`，内部保留未经修改的官�
 
 适配器位于 `src/QlementineStylePlugin.*`，向 `QStyleFactory` 注册
 `Qlementine`。启动器在 QGIS 初始化前设置 `QT_STYLE_OVERRIDE=Qlementine`，
-并传递 `-style Qlementine`，因此第一次启动和已有用户配置都使用同一主题。
+并把样式插件安装到官方 QGIS 的原生 `Contents/PlugIns/styles` 目录。由于 QGIS
+初始化后会根据 `qgis/style` 再创建一层 `QgsAppStyle`，QGIS+ 同时通过官方支持的
+`--globalsettingsfile` 提供 `qgis/style=Qlementine` 默认值，并使用独立的
+QGIS+ profile 根目录。这样首次启动实际底层样式就是 Qlementine，同时用户以后
+在设置中选择 macOS、Windows 或 Fusion 仍会保存；原版 QGIS 的 profile 不受影响。
+
+打包不能只检查插件文件是否存在。macOS 和 Windows 工作流都会启动重打包后的
+真实 QGIS，读取 `QStyleFactory` 以及 `QgsAppStyle` 的底层样式链；只有检测到
+Qlementine 已注册且已实际激活时才允许生成、上传和发布安装包。
 
 排查第三方插件兼容性时，可以临时使用原生样式：
 

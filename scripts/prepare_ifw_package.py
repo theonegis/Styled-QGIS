@@ -37,6 +37,11 @@ def validate_runtime(runtime: Path) -> None:
         raise RuntimeError(
             f"QGIS launcher configuration is missing: {launcher_config}"
         )
+    global_settings = runtime / "qgisplus-global-settings.ini"
+    if not global_settings.is_file():
+        raise RuntimeError(
+            f"QGIS+ global settings are missing: {global_settings}"
+        )
 
     qgis_launchers = (
         tuple(runtime.rglob("qgis.bat"))

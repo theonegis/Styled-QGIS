@@ -126,16 +126,51 @@ void showError(const std::wstring_view message) {
     return quoted;
 }
 
-[[nodiscard]] std::wstring forwardedArguments(const bool nativeStyle) {
+[[nodiscard]] bool hasOption(const bool nativeStyle,
+                             const std::wstring_view shortOption,
+                             const std::wstring_view longOption) {
+    const auto shortWithEquals = std::wstring{shortOption} + L"=";
+    const auto longWithEquals = std::wstring{longOption} + L"=";
+    for (int index = nativeStyle ? 2 : 1; index < __argc; ++index) {
+        const std::wstring_view argument{__wargv[index]};
+        if (argument == shortOption || argument == longOption ||
+            argument.starts_with(shortWithEquals) ||
+            argument.starts_with(longWithEquals)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+[[nodiscard]] std::optional<fs::path> qgisPlusProfilesPath() {
+    const auto required = GetEnvironmentVariableW(L"APPDATA", nullptr, 0);
+    if (required <= 1) {
+        return std::nullopt;
+    }
+    std::vector<wchar_t> buffer(required);
+    const auto length = GetEnvironmentVariableW(
+        L"APPDATA", buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (length == 0 || length >= buffer.size()) {
+        return std::nullopt;
+    }
+    return fs::path{std::wstring_view{buffer.data(), length}} / L"QGISPlus";
+}
+
+void appendArgument(std::wstring& arguments, const std::wstring_view argument) {
+    if (!arguments.empty()) {
+        arguments.push_back(L' ');
+    }
+    arguments += quoteArgument(argument);
+}
+
+[[nodiscard]] std::wstring forwardedArguments(
+    const bool nativeStyle, const std::vector<std::wstring>& injected) {
     std::wstring arguments;
-    if (!nativeStyle) {
-        arguments = L"-style Qlementine";
+    for (const auto& argument : injected) {
+        appendArgument(arguments, argument);
     }
     for (int index = nativeStyle ? 2 : 1; index < __argc; ++index) {
-        if (!arguments.empty()) {
-            arguments.push_back(L' ');
-        }
-        arguments += quoteArgument(__wargv[index]);
+        appendArgument(arguments, __wargv[index]);
     }
     return arguments;
 }
@@ -167,8 +202,30 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return 4;
     }
 
+    std::vector<std::wstring> injectedArguments;
+    if (!nativeStyle) {
+        if (!hasOption(nativeStyle, L"-g", L"--globalsettingsfile")) {
+            const auto globalSettings = *root / L"qgisplus-global-settings.ini";
+            if (!fs::is_regular_file(globalSettings)) {
+                showError(L"QGIS+ 安装不完整：默认样式配置文件缺失。");
+                return 5;
+            }
+            injectedArguments.emplace_back(L"--globalsettingsfile");
+            injectedArguments.emplace_back(globalSettings.wstring());
+        }
+        if (!hasOption(nativeStyle, L"-S", L"--profiles-path")) {
+            const auto profilesPath = qgisPlusProfilesPath();
+            if (!profilesPath) {
+                showError(L"无法确定 QGIS+ 用户配置目录。");
+                return 6;
+            }
+            injectedArguments.emplace_back(L"--profiles-path");
+            injectedArguments.emplace_back(profilesPath->wstring());
+        }
+    }
+
     auto file = qgisLauncher->wstring();
-    auto parameters = forwardedArguments(nativeStyle);
+    auto parameters = forwardedArguments(nativeStyle, injectedArguments);
     auto directory = qgisLauncher->parent_path().wstring();
     SHELLEXECUTEINFOW executeInfo{
         .cbSize = sizeof(SHELLEXECUTEINFOW),
@@ -183,7 +240,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     if (!ShellExecuteExW(&executeInfo) || executeInfo.hProcess == nullptr) {
         showError(L"无法启动官方 QGIS。\n\n" +
                   windowsErrorMessage(GetLastError()));
-        return 5;
+        return 7;
     }
 
     WaitForSingleObject(executeInfo.hProcess, INFINITE);

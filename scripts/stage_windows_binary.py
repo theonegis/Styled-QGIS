@@ -34,17 +34,28 @@ def _plugin_roots(runtime: Path) -> list[Path]:
     return sorted(roots)
 
 
-def stage(runtime: Path, launcher: Path, style_plugin: Path) -> list[Path]:
+def stage(
+    runtime: Path,
+    launcher: Path,
+    style_plugin: Path,
+    global_settings: Path,
+) -> list[Path]:
     runtime = runtime.resolve()
     if not runtime.is_dir():
         raise RuntimeError(f"Extracted MSI runtime is missing: {runtime}")
-    for path, label in ((launcher, "QGIS+ launcher"), (style_plugin, "style plugin")):
+    for path, label in (
+        (launcher, "QGIS+ launcher"),
+        (style_plugin, "style plugin"),
+        (global_settings, "QGIS+ global settings"),
+    ):
         if not path.is_file():
             raise RuntimeError(f"{label} is missing: {path}")
 
     official_launcher = _find_qgis_launcher(runtime)
     installed_launcher = runtime / "QGIS+.exe"
     shutil.copy2(launcher, installed_launcher)
+    installed_settings = runtime / "qgisplus-global-settings.ini"
+    shutil.copy2(global_settings, installed_settings)
     launcher_config = runtime / "qgisplus-launcher.txt"
     launcher_config.write_text(
         str(official_launcher.relative_to(runtime)), encoding="utf-8"
@@ -57,7 +68,11 @@ def stage(runtime: Path, launcher: Path, style_plugin: Path) -> list[Path]:
         shutil.copy2(style_plugin, destination)
         installed_plugins.append(destination)
 
-    if not installed_launcher.is_file() or not installed_plugins:
+    if (
+        not installed_launcher.is_file()
+        or not installed_settings.is_file()
+        or not installed_plugins
+    ):
         raise RuntimeError("QGIS+ staging validation failed")
     print(f"Official QGIS launcher: {official_launcher.relative_to(runtime)}")
     print(f"Installed QGIS+ launcher: {installed_launcher.relative_to(runtime)}")
@@ -71,9 +86,10 @@ def main() -> int:
     parser.add_argument("--runtime", required=True, type=Path)
     parser.add_argument("--launcher", required=True, type=Path)
     parser.add_argument("--style-plugin", required=True, type=Path)
+    parser.add_argument("--global-settings", required=True, type=Path)
     args = parser.parse_args()
     try:
-        stage(args.runtime, args.launcher, args.style_plugin)
+        stage(args.runtime, args.launcher, args.style_plugin, args.global_settings)
     except (OSError, RuntimeError) as error:
         print(error, file=sys.stderr)
         return 1
