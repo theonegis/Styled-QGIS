@@ -1,0 +1,16 @@
+[general]
+name=QGISPlus Material Theme
+description=Registers and activates the bundled QGISPlus Material UI theme.
+about=Small runtime bridge between QGIS' theme registry and the bundled static QSS theme.
+version=1.0.0
+qgisMinimumVersion=4.0
+qgisMaximumVersion=4.99
+author=QGIS+ Community Build
+email=
+category=Interface
+experimental=False
+deprecated=False
+hasProcessingProvider=False
+homepage=https://github.com/theonegis/Styled-QGIS
+repository=https://github.com/theonegis/Styled-QGIS
+tracker=https://github.com/theonegis/Styled-QGIS/issues

@@ -99,7 +99,6 @@ class MatrixTests(unittest.TestCase):
             if platform["platform"] == "windows"
         )
         self.assertEqual(windows["os"], "windows-2022")
-        self.assertEqual(windows["qt_arch"], "win64_msvc2022_64")
 
     def test_dispatch_can_select_one_platform(self) -> None:
         matrix = package_matrix.resolve_matrix(
@@ -151,32 +150,62 @@ class VerifiedDownloadTests(unittest.TestCase):
 
 
 class WindowsStagingTests(unittest.TestCase):
-    def test_style_is_added_to_each_qt_plugin_root(self) -> None:
+    def test_theme_and_registrar_are_added_to_each_qgis_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             runtime = root / "runtime"
             (runtime / "bin").mkdir(parents=True)
             (runtime / "bin" / "qgis.bat").write_text("@echo off\n")
-            for plugin_root in (runtime / "apps" / "Qt", runtime / "apps" / "qgis" / "qtplugins"):
-                (plugin_root / "platforms").mkdir(parents=True)
-                (plugin_root / "platforms" / "qwindows.dll").write_bytes(b"qt")
+            for theme_root in (
+                runtime / "apps" / "qgis" / "resources" / "themes",
+                runtime / "share" / "qgis" / "resources" / "themes",
+            ):
+                default_theme = theme_root / "default"
+                default_theme.mkdir(parents=True)
+                (default_theme / "style.qss").write_text("/* default */\n")
+            for plugin_root in (
+                runtime / "apps" / "qgis" / "python" / "plugins",
+                runtime / "share" / "qgis" / "python" / "plugins",
+            ):
+                (plugin_root / "processing").mkdir(parents=True)
             launcher = root / "QGIS+.exe"
             launcher.write_bytes(b"launcher")
-            style = root / "qgisplusstyle.dll"
-            style.write_bytes(b"style")
+            theme = root / "QGISPlus Material"
+            theme.mkdir()
+            for name in ("style.qss", "variables.qss", "palette.txt"):
+                (theme / name).write_text(f"/* {name} */\n", encoding="utf-8")
+            theme_plugin = root / "qgisplus_theme"
+            theme_plugin.mkdir()
+            for name in ("__init__.py", "plugin.py", "metadata.txt"):
+                (theme_plugin / name).write_text(
+                    f"# {name}\n", encoding="utf-8"
+                )
             settings = root / "qgisplus-global-settings.ini"
-            settings.write_text("[qgis]\nstyle=Qlementine\n", encoding="utf-8")
-            installed = windows_stage.stage(runtime, launcher, style, settings)
-            self.assertEqual(len(installed), 2)
+            settings.write_text(
+                "[qgis]\nstyle=Fusion\n[UI]\nUITheme=QGISPlus Material\n"
+                "[PythonPlugins]\nqgisplus_theme=true\n",
+                encoding="utf-8",
+            )
+            installed_themes, installed_plugins = windows_stage.stage(
+                runtime, launcher, theme, theme_plugin, settings
+            )
+            self.assertEqual(len(installed_themes), 2)
+            self.assertEqual(len(installed_plugins), 2)
             self.assertTrue((runtime / "QGIS+.exe").is_file())
             self.assertEqual(
                 (runtime / "qgisplus-launcher.txt").read_text(), "bin/qgis.bat"
             )
             self.assertEqual(
                 (runtime / "qgisplus-global-settings.ini").read_text(),
-                "[qgis]\nstyle=Qlementine\n",
+                "[qgis]\nstyle=Fusion\n[UI]\nUITheme=QGISPlus Material\n"
+                "[PythonPlugins]\nqgisplus_theme=true\n",
             )
-            self.assertTrue(all(path.read_bytes() == b"style" for path in installed))
+            self.assertTrue(
+                all((path / "style.qss").is_file() for path in installed_themes)
+            )
+            self.assertTrue(
+                all((path / "metadata.txt").is_file() for path in installed_plugins)
+            )
 
 
 class QtIfwTests(unittest.TestCase):
@@ -191,11 +220,34 @@ class QtIfwTests(unittest.TestCase):
                 "bin/qgis.bat", encoding="utf-8"
             )
             (runtime / "qgisplus-global-settings.ini").write_text(
-                "[qgis]\nstyle=Qlementine\n", encoding="utf-8"
+                "[qgis]\nstyle=Fusion\n[UI]\nUITheme=QGISPlus Material\n"
+                "[PythonPlugins]\nqgisplus_theme=true\n",
+                encoding="utf-8",
             )
             (runtime / "bin" / "qgis.bat").write_text("@echo off\n")
-            (runtime / "plugins" / "styles").mkdir(parents=True)
-            (runtime / "plugins" / "styles" / "qgisplusstyle.dll").write_bytes(b"style")
+            material = (
+                runtime
+                / "apps"
+                / "qgis"
+                / "resources"
+                / "themes"
+                / "QGISPlus Material"
+            )
+            material.mkdir(parents=True)
+            (material / "style.qss").write_text("/* QGISPlus Material */\n")
+            registrar = (
+                runtime
+                / "apps"
+                / "qgis"
+                / "python"
+                / "plugins"
+                / "qgisplus_theme"
+            )
+            registrar.mkdir(parents=True)
+            (registrar / "metadata.txt").write_text(
+                "[general]\nname=QGISPlus Material Theme\n",
+                encoding="utf-8",
+            )
             license_path = root / "LICENSE"
             license_path.write_text("GPL", encoding="utf-8")
             install_script = root / "installscript.qs"
@@ -225,7 +277,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("prepare_source.py", self.workflow)
 
     def test_cache_is_optional_and_download_is_always_verified(self) -> None:
-        self.assertGreaterEqual(self.workflow.count("continue-on-error: true"), 3)
+        self.assertGreaterEqual(self.workflow.count("continue-on-error: true"), 2)
         self.assertEqual(self.workflow.count("download_verified.py"), 2)
         self.assertIn("SHA-256 mismatch", (ROOT / "scripts" / "download_verified.py").read_text())
 
@@ -251,14 +303,14 @@ class WorkflowTests(unittest.TestCase):
     def test_windows_uses_matching_msvc_2022_toolchain(self) -> None:
         self.assertIn('-G "Visual Studio 17 2022" -A x64', self.workflow)
         self.assertIn("build/launcher/Release/QGIS+.exe", self.workflow)
-        self.assertIn(
-            "build/plugins/styles/Release/qgisplusstyle.dll", self.workflow
-        )
+        self.assertIn('--theme "themes/QGISPlus Material"', self.workflow)
+        self.assertIn('--theme-plugin "plugins/qgisplus_theme"', self.workflow)
+        self.assertNotIn("qgisplusstyle.dll", self.workflow)
         self.assertIn(
             "$PSNativeCommandUseErrorActionPreference = $true", self.workflow
         )
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
-        self.assertIn("if(WIN32 AND NOT MSVC)", cmake)
+        self.assertIn("if(NOT MSVC)", cmake)
         self.assertIn("must use MSVC", cmake)
         windows_step = self.workflow.split(
             "- name: Configure and build Windows overlay", 1
@@ -284,57 +336,80 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("Mounted DMG root contents", extractor)
         self.assertNotIn("-maxdepth", extractor)
 
-    def test_style_smoke_test_uses_a_real_offscreen_gui_context(self) -> None:
-        smoke_test = (ROOT / "tests" / "StylePluginSmokeTest.cpp").read_text()
-        self.assertIn("QApplication app", smoke_test)
-        self.assertIn('qputenv("QT_QPA_PLATFORM"', smoke_test)
-        self.assertIn('plugin->create(', smoke_test)
-        self.assertNotIn("QStyleFactory::", smoke_test)
+    def test_material_theme_is_compact_and_covers_qgis_widgets(self) -> None:
+        theme = ROOT / "themes" / "QGISPlus Material"
+        qss = (theme / "style.qss").read_text(encoding="utf-8")
+        variables = [
+            line.split(":", 1)[0]
+            for line in (theme / "variables.qss").read_text(
+                encoding="utf-8"
+            ).splitlines()
+            if line.startswith("@")
+        ]
+        for required in ("variables.qss", "palette.txt", "LICENSE.qt_material"):
+            self.assertTrue((theme / required).is_file())
+        for selector in (
+            "QgsLayerTreeView",
+            "QgsAttributeTableView",
+            "QgsMessageBar",
+            "QgsAdvancedDigitizingFloater",
+            "QgsColorButton",
+            "QgsMapCanvas",
+            "QComboBox#cmbUITheme",
+        ):
+            self.assertIn(selector, qss)
+        self.assertIn("min-height: 22px", qss)
+        self.assertNotIn("height: 40px", qss)
+        for index, variable in enumerate(variables):
+            self.assertFalse(
+                any(later.startswith(variable) for later in variables[index + 1 :]),
+                f"QGIS replaces {variable} before a longer variable name",
+            )
 
-        adapter = (ROOT / "src" / "QlementineStylePlugin.cpp").read_text()
-        self.assertIn("QgisCompatibleQlementineStyle", adapter)
-        self.assertIn("if (widget == nullptr)", adapter)
-        self.assertIn("QCommonStyle::sizeFromContents", adapter)
-        self.assertIn("QComboBoxPrivateContainer", adapter)
-        self.assertIn("QCommonStyle::polish", adapter)
-
-    def test_macos_plugin_uses_bundled_qgis_qt_frameworks(self) -> None:
+    def test_macos_package_injects_qgis_theme_without_qt_plugin(self) -> None:
         packaging = (ROOT / "scripts" / "package_macos_binary.sh").read_text()
-        self.assertIn('lipo "${plugin_path}" -verify_arch "${target_arch}"', packaging)
-        self.assertNotIn('lipo -verify_arch "${target_arch}"', packaging)
-        self.assertIn("Contents/PlugIns/styles", packaging)
-        self.assertIn("@loader_path/../../Frameworks", packaging)
-        self.assertIn("libQt6${module_name}.6.dylib", packaging)
-        self.assertIn("install_name_tool -change", packaging)
-        self.assertIn("Style plugin still references a Qt framework unavailable", packaging)
+        self.assertIn("qgis/resources/themes", packaging)
+        self.assertIn("qgis/python/plugins", packaging)
+        self.assertIn("qgisplus_theme", packaging)
+        self.assertIn("QGISPlus Material", packaging)
+        self.assertNotIn("install_name_tool", packaging)
+        self.assertIn("*qgisplusstyle*", packaging)
 
-    def test_launchers_use_style_override_without_broken_style_arguments(self) -> None:
+    def test_launchers_select_ui_theme_without_style_override(self) -> None:
         macos = (ROOT / "packaging" / "macos" / "QGISPlusLauncher.cpp").read_text()
         windows = (ROOT / "packaging" / "windows" / "QGISPlusLauncher.cpp").read_text()
-        self.assertIn('setenv("QT_STYLE_OVERRIDE", "Qlementine"', macos)
-        self.assertIn('"Contents" / "PlugIns"', macos)
         self.assertIn('"--globalsettingsfile"', macos)
         self.assertIn('"--profiles-path"', macos)
-        self.assertNotIn('arguments.emplace_back("-style")', macos)
-        self.assertIn('SetEnvironmentVariableW(L"QT_STYLE_OVERRIDE", L"Qlementine")', windows)
         self.assertIn('L"--globalsettingsfile"', windows)
         self.assertIn('L"--profiles-path"', windows)
-        self.assertNotIn('L"-style Qlementine"', windows)
+        self.assertNotIn('setenv("QT_STYLE_OVERRIDE"', macos)
+        self.assertNotIn('SetEnvironmentVariableW(L"QT_STYLE_OVERRIDE"', windows)
 
         global_settings = (
             ROOT / "packaging" / "qgisplus-global-settings.ini"
         ).read_text(encoding="utf-8")
-        self.assertIn("style=Qlementine", global_settings)
-        self.assertIn("UITheme=default", global_settings)
+        self.assertIn("style=Fusion", global_settings)
+        self.assertIn("UITheme=QGISPlus Material", global_settings)
+        self.assertIn("[PythonPlugins]", global_settings)
+        self.assertIn("qgisplus_theme=true", global_settings)
 
-    def test_packages_run_real_qgis_style_verification(self) -> None:
+        registrar = ROOT / "plugins" / "qgisplus_theme" / "plugin.py"
+        registrar_source = registrar.read_text(encoding="utf-8")
+        self.assertIn("applicationThemeRegistry", registrar_source)
+        self.assertIn("setUITheme", registrar_source)
+        self.assertNotIn("eventFilter", registrar_source)
+
+    def test_packages_run_real_qgis_theme_verification(self) -> None:
         packaging = (ROOT / "scripts" / "package_macos_binary.sh").read_text()
-        verifier = (ROOT / "scripts" / "verify_qgis_style.py").read_text()
-        probe = (ROOT / "scripts" / "qgis_style_probe.py").read_text()
-        self.assertIn("verify_qgis_style.py", packaging)
-        self.assertIn("verify_qgis_style.py", self.workflow)
-        self.assertIn("QGISPLUS_STYLE_PROBE_OUTPUT", verifier)
-        self.assertIn('"qlementine"', probe.lower())
+        verifier = (ROOT / "scripts" / "verify_qgis_theme.py").read_text()
+        probe = (ROOT / "scripts" / "qgis_theme_probe.py").read_text()
+        self.assertIn("verify_qgis_theme.py", packaging)
+        self.assertIn("verify_qgis_theme.py", self.workflow)
+        self.assertIn("QGISPLUS_THEME_PROBE_OUTPUT", verifier)
+        self.assertIn("QGISPlus Material", probe)
+        self.assertIn("QgsLayerTreeView", probe)
+        self.assertIn("registered_themes", probe)
+        self.assertIn("qlementine_available", probe)
         self.assertIn('result["passed"]', probe)
 
     def test_packages_verify_options_text_and_combo_width(self) -> None:
@@ -344,7 +419,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("verify_qgis_options_ui.py", packaging)
         self.assertIn("verify_qgis_options_ui.py", self.workflow)
         self.assertIn("disabled_text_contrast", probe)
-        self.assertIn("popup_has_full_width", probe)
+        self.assertIn("selected_text_contrast", probe)
+        self.assertIn("style_popup_has_full_width", probe)
+        self.assertIn("theme_popup_has_full_width", probe)
         self.assertIn("menu_checkable_toggle", probe)
         self.assertIn('result.get("passed", False)', verifier)
 

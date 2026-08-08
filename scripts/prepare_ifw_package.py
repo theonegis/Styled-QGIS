@@ -51,10 +51,18 @@ def validate_runtime(runtime: Path) -> None:
     if not qgis_launchers:
         raise RuntimeError("The staged runtime does not contain official QGIS")
 
-    style_candidates = tuple(runtime.rglob("qgisplusstyle.dll"))
-    if not style_candidates:
+    theme_candidates = tuple(runtime.rglob("QGISPlus Material/style.qss"))
+    if not theme_candidates:
         raise RuntimeError(
-            "Qlementine style plugin is missing from the staged QGIS runtime"
+            "QGISPlus Material theme is missing from the staged QGIS runtime"
+        )
+
+    theme_plugin_candidates = tuple(
+        runtime.rglob("qgisplus_theme/metadata.txt")
+    )
+    if not theme_plugin_candidates:
+        raise RuntimeError(
+            "QGISPlus Material theme registrar is missing from the staged runtime"
         )
 
 
@@ -114,7 +122,7 @@ def prepare_ifw_package(
     package = ET.Element("Package")
     for name, value in (
         ("DisplayName", "QGIS+"),
-        ("Description", "QGIS with the Qlementine interface style"),
+        ("Description", "QGIS with the compact QGISPlus Material UI theme"),
         ("Version", version),
         ("ReleaseDate", release_date),
         ("Default", "true"),

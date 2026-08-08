@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""启动真实 QGIS Options，拒绝文字低对比度或下拉框截断的安装包。"""
+"""启动真实 QGIS Options，拒绝文字低对比度或主题下拉框截断。"""
 
 from __future__ import annotations
 
@@ -25,7 +25,13 @@ def verify(launcher: Path, probe: Path, work_dir: Path, timeout: int) -> dict:
     result_path = work_dir / "qgisplus-options-probe.json"
     screenshot_path = work_dir / "qgisplus-options.png"
     combo_screenshot_path = work_dir / "qgisplus-style-combo.png"
-    for path in (result_path, screenshot_path, combo_screenshot_path):
+    theme_screenshot_path = work_dir / "qgisplus-theme-combo.png"
+    for path in (
+        result_path,
+        screenshot_path,
+        combo_screenshot_path,
+        theme_screenshot_path,
+    ):
         path.unlink(missing_ok=True)
 
     environment = os.environ.copy()
@@ -34,13 +40,13 @@ def verify(launcher: Path, probe: Path, work_dir: Path, timeout: int) -> dict:
             "QGISPLUS_OPTIONS_PROBE_OUTPUT": str(result_path),
             "QGISPLUS_OPTIONS_SCREENSHOT": str(screenshot_path),
             "QGISPLUS_COMBO_SCREENSHOT": str(combo_screenshot_path),
+            "QGISPLUS_THEME_COMBO_SCREENSHOT": str(theme_screenshot_path),
         }
     )
     command = [
         str(launcher),
         "--nologo",
         "--noversioncheck",
-        "--noplugins",
         "--profiles-path",
         str(work_dir / "profiles"),
         "--code",
@@ -76,9 +82,7 @@ def verify(launcher: Path, probe: Path, work_dir: Path, timeout: int) -> dict:
             f"QGIS+ Options UI verification failed (exit {completed.returncode}): "
             + json.dumps(result, ensure_ascii=False)
         )
-    print(
-        "Verified QGIS+ Options UI: readable text and full ComboBox labels"
-    )
+    print("Verified QGIS+ Options UI: readable text and full theme labels")
     return result
 
 

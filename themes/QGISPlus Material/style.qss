@@ -1,0 +1,778 @@
+/* QGISPlus Material
+ * Compact desktop adaptation of Qt Advanced Stylesheets' qt_material theme.
+ * Keep this marker: runtime verification checks that this theme is active.
+ */
+
+/* -------------------------------------------------------------------------
+ * Application surfaces and typography
+ * ---------------------------------------------------------------------- */
+
+QMainWindow,
+QDialog,
+QWizard,
+QWizardPage,
+QMdiSubWindow {
+    color: @text;
+    background-color: @background;
+    selection-background-color: @selection;
+    selection-color: @selectionText;
+}
+
+QWidget {
+    color: @text;
+    selection-background-color: @selection;
+    selection-color: @selectionText;
+}
+
+QWidget[autoFillBackground="true"],
+QAbstractScrollArea,
+QStackedWidget,
+QTabWidget::pane {
+    background-color: @surface;
+}
+
+QLabel,
+QCheckBox,
+QRadioButton {
+    color: @text;
+    background-color: transparent;
+}
+
+QLabel:disabled,
+QCheckBox:disabled,
+QRadioButton:disabled,
+QWidget:disabled {
+    color: @textDisabled;
+}
+
+QToolTip {
+    color: @text;
+    background-color: @surface;
+    border: 1px solid @borderStrong;
+    border-radius: 4px;
+    padding: 4px 7px;
+}
+
+/* -------------------------------------------------------------------------
+ * Inputs: compact desktop sizing instead of qt_material's touch spacing
+ * ---------------------------------------------------------------------- */
+
+QLineEdit,
+QTextEdit,
+QPlainTextEdit,
+QAbstractSpinBox,
+QComboBox {
+    color: @text;
+    background-color: @surface;
+    border: 1px solid @borderStrong;
+    border-radius: 5px;
+    padding: 3px 7px;
+    min-height: 22px;
+}
+
+QLineEdit:hover,
+QTextEdit:hover,
+QPlainTextEdit:hover,
+QAbstractSpinBox:hover,
+QComboBox:hover {
+    border-color: @primaryHover;
+}
+
+QLineEdit:focus,
+QTextEdit:focus,
+QPlainTextEdit:focus,
+QAbstractSpinBox:focus,
+QComboBox:focus {
+    border: 1px solid @primary;
+    background-color: @surface;
+}
+
+QLineEdit:disabled,
+QTextEdit:disabled,
+QPlainTextEdit:disabled,
+QAbstractSpinBox:disabled,
+QComboBox:disabled {
+    color: @textDisabled;
+    background-color: @surfaceVariant;
+    border-color: @border;
+}
+
+QLineEdit:read-only,
+QTextEdit:read-only,
+QPlainTextEdit:read-only {
+    background-color: @surfaceVariant;
+}
+
+QComboBox {
+    padding-right: 26px;
+}
+
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 24px;
+    border: 0;
+}
+
+QComboBox::down-arrow {
+    image: url(@theme_path/icons/primary/downarrow.svg);
+    width: 12px;
+    height: 12px;
+}
+
+QComboBox::down-arrow:disabled {
+    image: url(@theme_path/icons/disabled/downarrow.svg);
+}
+
+QComboBox QAbstractItemView {
+    color: @text;
+    background-color: @surface;
+    border: 1px solid @borderStrong;
+    border-radius: 5px;
+    padding: 3px;
+    selection-background-color: @selection;
+    selection-color: @selectionText;
+    outline: 0;
+}
+
+/* QGIS Options uses narrow columns for these selectors. Reserve enough width
+ * for "QGISPlus Material" and platform style names without eliding. */
+QComboBox#cmbStyle,
+QComboBox#cmbUITheme {
+    min-width: 170px;
+}
+
+QComboBox#cmbStyle QAbstractItemView,
+QComboBox#cmbUITheme QAbstractItemView {
+    min-width: 210px;
+}
+
+QAbstractSpinBox {
+    padding-right: 22px;
+}
+
+QAbstractSpinBox::up-button,
+QAbstractSpinBox::down-button {
+    subcontrol-origin: border;
+    width: 19px;
+    border: 0;
+    background-color: transparent;
+}
+
+QAbstractSpinBox::up-button {
+    subcontrol-position: top right;
+}
+
+QAbstractSpinBox::down-button {
+    subcontrol-position: bottom right;
+}
+
+QAbstractSpinBox::up-arrow {
+    image: url(@theme_path/icons/primary/uparrow.svg);
+    width: 10px;
+    height: 10px;
+}
+
+QAbstractSpinBox::down-arrow {
+    image: url(@theme_path/icons/primary/downarrow.svg);
+    width: 10px;
+    height: 10px;
+}
+
+QAbstractSpinBox::up-arrow:disabled {
+    image: url(@theme_path/icons/disabled/uparrow.svg);
+}
+
+QAbstractSpinBox::down-arrow:disabled {
+    image: url(@theme_path/icons/disabled/downarrow.svg);
+}
+
+/* -------------------------------------------------------------------------
+ * Buttons
+ * ---------------------------------------------------------------------- */
+
+QPushButton {
+    color: @text;
+    background-color: @surface;
+    border: 1px solid @borderStrong;
+    border-radius: 5px;
+    padding: 3px 10px;
+    min-height: 24px;
+}
+
+QPushButton:hover {
+    color: @primaryHover;
+    background-color: @primarySoft;
+    border-color: @primaryHover;
+}
+
+QPushButton:pressed,
+QPushButton:checked {
+    color: #ffffff;
+    background-color: @primary;
+    border-color: @primaryPressed;
+}
+
+QPushButton:disabled {
+    color: @textDisabled;
+    background-color: @surfaceVariant;
+    border-color: @border;
+}
+
+QPushButton[flat="true"],
+QPushButton[autoDefault="false"][flat="true"] {
+    background-color: transparent;
+    border-color: transparent;
+}
+
+QToolButton {
+    color: @text;
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    padding: 3px;
+    margin: 1px;
+    min-width: 22px;
+    min-height: 22px;
+}
+
+QToolButton:hover {
+    background-color: @surfaceHover;
+    border-color: @border;
+}
+
+QToolButton:pressed,
+QToolButton:checked {
+    color: @primaryPressed;
+    background-color: @surfacePressed;
+    border-color: @primary;
+}
+
+QToolButton:disabled {
+    color: @textDisabled;
+    background-color: transparent;
+}
+
+QToolButton::menu-button {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 16px;
+    border: 0;
+}
+
+QToolButton::menu-arrow {
+    image: url(@theme_path/icons/primary/downarrow.svg);
+    width: 9px;
+    height: 9px;
+}
+
+/* Preserve preview painting in QGIS-owned buttons. */
+QgsColorButton,
+QgsColorRampButton,
+QgsSymbolButton,
+QgsFontButton,
+QgsPropertyOverrideButton {
+    padding: 2px;
+    border: 1px solid @borderStrong;
+    border-radius: 5px;
+    background-color: @surface;
+}
+
+QgsColorButton:hover,
+QgsColorRampButton:hover,
+QgsSymbolButton:hover,
+QgsFontButton:hover,
+QgsPropertyOverrideButton:hover {
+    border-color: @primary;
+}
+
+QgsPropertyOverrideButton:checked {
+    background-color: @primarySoft;
+    border-color: @primary;
+}
+
+/* -------------------------------------------------------------------------
+ * Check boxes, radio buttons and menus
+ * ---------------------------------------------------------------------- */
+
+QCheckBox,
+QRadioButton {
+    spacing: 6px;
+    min-height: 20px;
+}
+
+QCheckBox::indicator,
+QGroupBox::indicator,
+QAbstractItemView::indicator {
+    width: 18px;
+    height: 18px;
+}
+
+QRadioButton::indicator {
+    width: 18px;
+    height: 18px;
+}
+
+QCheckBox::indicator:checked,
+QGroupBox::indicator:checked,
+QAbstractItemView::indicator:checked {
+    image: url(@theme_path/icons/primary/checkbox_checked.svg);
+}
+
+QCheckBox::indicator:unchecked,
+QGroupBox::indicator:unchecked,
+QAbstractItemView::indicator:unchecked {
+    image: url(@theme_path/icons/primary/checkbox_unchecked.svg);
+}
+
+QCheckBox::indicator:indeterminate,
+QGroupBox::indicator:indeterminate,
+QAbstractItemView::indicator:indeterminate {
+    image: url(@theme_path/icons/primary/checkbox_indeterminate.svg);
+}
+
+QCheckBox::indicator:checked:disabled,
+QGroupBox::indicator:checked:disabled,
+QAbstractItemView::indicator:checked:disabled {
+    image: url(@theme_path/icons/disabled/checkbox_checked.svg);
+}
+
+QCheckBox::indicator:unchecked:disabled,
+QGroupBox::indicator:unchecked:disabled,
+QAbstractItemView::indicator:unchecked:disabled {
+    image: url(@theme_path/icons/disabled/checkbox_unchecked.svg);
+}
+
+QCheckBox::indicator:indeterminate:disabled,
+QGroupBox::indicator:indeterminate:disabled,
+QAbstractItemView::indicator:indeterminate:disabled {
+    image: url(@theme_path/icons/disabled/checkbox_indeterminate.svg);
+}
+
+QRadioButton::indicator:checked {
+    image: url(@theme_path/icons/primary/radiobutton_checked.svg);
+}
+
+QRadioButton::indicator:unchecked {
+    image: url(@theme_path/icons/primary/radiobutton_unchecked.svg);
+}
+
+QRadioButton::indicator:checked:disabled {
+    image: url(@theme_path/icons/disabled/radiobutton_checked.svg);
+}
+
+QRadioButton::indicator:unchecked:disabled {
+    image: url(@theme_path/icons/disabled/radiobutton_unchecked.svg);
+}
+
+QMenu {
+    color: @text;
+    background-color: @surface;
+    border: 1px solid @borderStrong;
+    border-radius: 5px;
+    padding: 4px;
+}
+
+QMenu::item {
+    color: @text;
+    background-color: transparent;
+    border-radius: 4px;
+    padding: 4px 26px 4px 24px;
+    min-height: 20px;
+}
+
+QMenu::item:selected {
+    color: @selectionText;
+    background-color: @selection;
+}
+
+QMenu::item:disabled {
+    color: @textDisabled;
+}
+
+QMenu::separator {
+    height: 1px;
+    background-color: @border;
+    margin: 3px 6px;
+}
+
+QMenu::right-arrow {
+    image: url(@theme_path/icons/primary/rightarrow.svg);
+    width: 10px;
+    height: 10px;
+}
+
+QMenu::indicator {
+    width: 16px;
+    height: 16px;
+    left: 4px;
+}
+
+QMenu::indicator:non-exclusive:checked {
+    image: url(@theme_path/icons/primary/checkbox_checked.svg);
+}
+
+QMenu::indicator:non-exclusive:unchecked {
+    image: url(@theme_path/icons/primary/checkbox_unchecked.svg);
+}
+
+QMenu::indicator:exclusive:checked {
+    image: url(@theme_path/icons/primary/radiobutton_checked.svg);
+}
+
+QMenu::indicator:exclusive:unchecked {
+    image: url(@theme_path/icons/primary/radiobutton_unchecked.svg);
+}
+
+QMenuBar {
+    color: @text;
+    background-color: @surface;
+    border-bottom: 1px solid @border;
+}
+
+QMenuBar::item {
+    background-color: transparent;
+    border-radius: 4px;
+    padding: 4px 7px;
+}
+
+QMenuBar::item:selected,
+QMenuBar::item:pressed {
+    color: @selectionText;
+    background-color: @selection;
+}
+
+/* -------------------------------------------------------------------------
+ * Tabs, groups, docks and toolbars
+ * ---------------------------------------------------------------------- */
+
+QTabWidget::pane {
+    border: 1px solid @border;
+    border-radius: 5px;
+}
+
+QTabBar::tab {
+    color: @textMuted;
+    background-color: transparent;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    padding: 5px 9px;
+    min-height: 22px;
+}
+
+QTabBar::tab:hover {
+    color: @primaryHover;
+    background-color: @primarySoft;
+}
+
+QTabBar::tab:selected {
+    color: @primaryPressed;
+    border-bottom-color: @primary;
+}
+
+QTabBar::close-button {
+    image: url(@theme_path/icons/primary/close.svg);
+    subcontrol-position: right;
+}
+
+QGroupBox,
+QgsCollapsibleGroupBox {
+    color: @text;
+    background-color: @surface;
+    border: 1px solid @border;
+    border-radius: 5px;
+    margin-top: 9px;
+    padding: 8px;
+    padding-top: 12px;
+}
+
+QGroupBox::title,
+QgsCollapsibleGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 8px;
+    padding: 0 4px;
+    color: @text;
+    background-color: @surface;
+}
+
+QDockWidget,
+QgsDockWidget {
+    color: @text;
+    background-color: @surface;
+    border: 1px solid @border;
+    titlebar-close-icon: url(@theme_path/icons/primary/close.svg);
+    titlebar-normal-icon: url(@theme_path/icons/primary/float.svg);
+}
+
+QDockWidget::title,
+QgsDockWidget::title {
+    background-color: @surfaceVariant;
+    border-bottom: 1px solid @border;
+    padding: 4px 6px;
+    text-align: left;
+}
+
+QToolBar {
+    background-color: @surface;
+    border: 0;
+    spacing: 1px;
+    padding: 1px;
+}
+
+QToolBar:horizontal {
+    border-bottom: 1px solid @border;
+}
+
+QToolBar:vertical {
+    border-right: 1px solid @border;
+}
+
+QToolBar::separator {
+    background-color: @border;
+    margin: 4px 3px;
+}
+
+QStatusBar {
+    color: @textMuted;
+    background-color: @surface;
+    border-top: 1px solid @border;
+}
+
+/* -------------------------------------------------------------------------
+ * Item views, headers and scroll bars
+ * ---------------------------------------------------------------------- */
+
+QTreeView,
+QListView,
+QTableView,
+QTableWidget {
+    color: @text;
+    background-color: @surface;
+    alternate-background-color: @surfaceVariant;
+    border: 1px solid @border;
+    border-radius: 5px;
+    outline: 0;
+}
+
+QTreeView::item,
+QListView::item,
+QTableView::item,
+QTableWidget::item {
+    color: @text;
+    padding: 3px 5px;
+    min-height: 20px;
+    border-color: transparent;
+}
+
+QTreeView::item:hover,
+QListView::item:hover,
+QTableView::item:hover,
+QTableWidget::item:hover {
+    background-color: @surfaceHover;
+}
+
+QTreeView::item:selected,
+QListView::item:selected,
+QTableView::item:selected,
+QTableWidget::item:selected {
+    color: @selectionText;
+    background-color: @selection;
+    selection-color: @selectionText;
+    selection-background-color: @selection;
+}
+
+QTreeView::branch:closed:has-children {
+    image: url(@theme_path/icons/primary/branch-closed.svg);
+}
+
+QTreeView::branch:open:has-children {
+    image: url(@theme_path/icons/primary/branch-open.svg);
+}
+
+QHeaderView {
+    background-color: @surfaceVariant;
+    border: 0;
+}
+
+QHeaderView::section,
+QTableCornerButton::section {
+    color: @text;
+    background-color: @surfaceVariant;
+    border: 0;
+    border-right: 1px solid @border;
+    border-bottom: 1px solid @border;
+    padding: 4px 7px;
+    min-height: 22px;
+}
+
+QHeaderView::section:hover {
+    background-color: @surfaceHover;
+}
+
+QScrollBar:vertical {
+    background-color: transparent;
+    width: 10px;
+    margin: 1px;
+}
+
+QScrollBar:horizontal {
+    background-color: transparent;
+    height: 10px;
+    margin: 1px;
+}
+
+QScrollBar::handle:vertical,
+QScrollBar::handle:horizontal {
+    background-color: @borderStrong;
+    border-radius: 4px;
+    min-width: 28px;
+    min-height: 28px;
+}
+
+QScrollBar::handle:vertical:hover,
+QScrollBar::handle:horizontal:hover {
+    background-color: @primary;
+}
+
+QScrollBar::add-line,
+QScrollBar::sub-line,
+QScrollBar::add-page,
+QScrollBar::sub-page {
+    width: 0;
+    height: 0;
+    background-color: transparent;
+    border: 0;
+}
+
+/* -------------------------------------------------------------------------
+ * Feedback controls
+ * ---------------------------------------------------------------------- */
+
+QProgressBar {
+    color: @text;
+    background-color: @surfaceVariant;
+    border: 1px solid @border;
+    border-radius: 4px;
+    text-align: center;
+    min-height: 8px;
+}
+
+QProgressBar::chunk {
+    background-color: @primary;
+    border-radius: 3px;
+}
+
+QSlider::groove:horizontal {
+    height: 4px;
+    background-color: @border;
+    border-radius: 2px;
+}
+
+QSlider::handle:horizontal {
+    background-color: @primary;
+    border: 2px solid @surface;
+    border-radius: 7px;
+    width: 14px;
+    height: 14px;
+    margin: -6px 0;
+}
+
+QFrame[frameShape="4"] {
+    border: 0;
+    border-top: 1px solid @border;
+}
+
+QFrame[frameShape="5"] {
+    border: 0;
+    border-left: 1px solid @border;
+}
+
+/* -------------------------------------------------------------------------
+ * QGIS widgets and custom-painted controls
+ * ---------------------------------------------------------------------- */
+
+QgsPanelWidget,
+QgsAttributeFormWidget,
+QgsCustomLayerOrderWidget,
+QgsRasterCalcDialogBase,
+QgsRendererMeshPropsWidgetBase,
+QgsTextFormatWidgetBase {
+    color: @text;
+    background-color: @background;
+}
+
+/* Views inherit material selection colors without changing their delegates. */
+QgsLayerTreeView,
+QgsBrowserTreeView,
+QgsLocatorResultsView,
+QgsAttributeTableView,
+QgsFeatureListView {
+    color: @text;
+    background-color: @surface;
+    alternate-background-color: @surfaceVariant;
+    border-color: @border;
+    selection-background-color: @selection;
+    selection-color: @selectionText;
+}
+
+QgsLayerTreeView::item,
+QgsBrowserTreeView::item,
+QgsLocatorResultsView::item,
+QgsAttributeTableView::item,
+QgsFeatureListView::item {
+    padding: 3px 5px;
+    min-height: 20px;
+}
+
+/* Composite field/project widgets keep their own internal editors. */
+QgsFilterLineEdit,
+QgsScaleComboBox,
+QgsMapLayerComboBox,
+QgsFieldComboBox,
+QgsProjectionSelectionWidget QLineEdit,
+QgsFileWidget QLineEdit,
+QgsFieldExpressionWidget QComboBox,
+QgsLocatorWidget QLineEdit {
+    color: @text;
+    background-color: @surface;
+    border-color: @borderStrong;
+}
+
+QgsMessageBar,
+QgsMessageBarItem {
+    color: @text;
+    background-color: @surface;
+    border: 0;
+    border-bottom: 1px solid @border;
+}
+
+QgsMessageBar QLabel,
+QgsMessageBarItem QLabel {
+    color: @text;
+    background-color: transparent;
+}
+
+QgsAdvancedDigitizingFloater {
+    color: @text;
+    background-color: rgba(255, 255, 255, 235);
+    border: 1px solid @borderStrong;
+    border-radius: 5px;
+}
+
+/* Do not paint over canvases or other custom-rendered previews. */
+QgsMapCanvas,
+QgsLayoutView,
+QgsGradientPlotEventFilter,
+QGraphicsView {
+    border: 0;
+}
+
+QgsLocatorResultsView::item:selected,
+QgsLayerTreeView::item:selected,
+QgsBrowserTreeView::item:selected,
+QgsAttributeTableView::item:selected,
+QgsFeatureListView::item:selected {
+    color: @selectionText;
+    background-color: @selection;
+}

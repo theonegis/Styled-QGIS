@@ -1,0 +1,17 @@
+@background: #f7f8fa;
+@surfaceVariant: #f1f3f5;
+@surfaceHover: #e8f0fe;
+@surfacePressed: #dce8fb;
+@surface: #ffffff;
+@borderStrong: #b8c0ca;
+@border: #d7dce2;
+@textMuted: #667085;
+@textDisabled: #667085;
+@text: #24292f;
+@primaryHover: #1f6fe5;
+@primaryPressed: #155cc1;
+@primarySoft: #e7f0ff;
+@primary: #2979ff;
+@selectionText: #102a56;
+@selection: #d8e7ff;
+@danger: #c62828;

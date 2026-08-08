@@ -2,23 +2,28 @@
 
 set -euo pipefail
 
-if (( $# != 6 )); then
-    echo "Usage: $0 QGIS.app STYLE_PLUGIN LAUNCHER ARCH VERSION OUTPUT.dmg" >&2
+if (( $# != 5 )); then
+    echo "Usage: $0 QGIS.app LAUNCHER ARCH VERSION OUTPUT.dmg" >&2
     exit 2
 fi
 
 official_app="$1"
-style_plugin="$2"
-launcher="$3"
-target_arch="$4"
-version="$5"
-output_dmg="$6"
+launcher="$2"
+target_arch="$3"
+version="$4"
+output_dmg="$5"
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+theme_source="${repo_root}/themes/QGISPlus Material"
+theme_plugin_source="${repo_root}/plugins/qgisplus_theme"
 work_root="$(mktemp -d "${TMPDIR:-/tmp}/qgisplus-package.XXXXXX")"
 outer_app="${work_root}/QGIS+.app"
 
 cleanup() {
-    rm -rf "${work_root}"
+    if [[ "${QGISPLUS_KEEP_PACKAGE_WORK:-0}" == "1" ]]; then
+        echo "Preserved package work directory: ${work_root}" >&2
+    else
+        rm -rf "${work_root}"
+    fi
 }
 trap cleanup EXIT
 
@@ -28,8 +33,14 @@ case "${target_arch}" in
 esac
 
 test -f "${official_app}/Contents/Info.plist"
-test -f "${style_plugin}"
 test -x "${launcher}"
+test -f "${theme_source}/style.qss"
+test -f "${theme_source}/variables.qss"
+test -f "${theme_source}/palette.txt"
+test -f "${theme_plugin_source}/__init__.py"
+test -f "${theme_plugin_source}/plugin.py"
+test -f "${theme_plugin_source}/metadata.txt"
+
 official_executable="$(/usr/libexec/PlistBuddy -c \
     'Print :CFBundleExecutable' "${official_app}/Contents/Info.plist")"
 official_icon_name="$(/usr/libexec/PlistBuddy -c \
@@ -47,97 +58,62 @@ if [[ ! -f "${official_icon}" ]]; then
     echo "Official QGIS CFBundleIconFile is missing: ${official_icon_name}" >&2
     exit 1
 fi
-mkdir -p \
-    "${outer_app}/Contents/MacOS" \
-    "${outer_app}/Contents/Resources"
 
+mkdir -p "${outer_app}/Contents/MacOS" "${outer_app}/Contents/Resources"
 inner_app="${outer_app}/Contents/Resources/QGIS.app"
 ditto "${official_app}" "${inner_app}"
+# 允许用旧 QGIS+ 包作为本地测试输入，但最终包中绝不保留旧 Style 插件。
+find "${inner_app}/Contents/PlugIns/styles" -maxdepth 1 -type f \
+    -iname '*qgisplusstyle*' -delete 2>/dev/null || true
 ditto "${official_icon}" "${outer_app}/Contents/Resources/QGISPlus.icns"
 ditto "${repo_root}/packaging/qgisplus-global-settings.ini" \
     "${outer_app}/Contents/Resources/qgisplus-global-settings.ini"
 printf '%s\n' "${official_executable}" \
     > "${outer_app}/Contents/Resources/qgisplus-executable.txt"
-mkdir -p "${inner_app}/Contents/PlugIns/styles"
-ditto "${style_plugin}" \
-    "${inner_app}/Contents/PlugIns/styles/$(basename "${style_plugin}")"
-ditto "${launcher}" \
-    "${outer_app}/Contents/MacOS/QGISPlusLauncher"
+
+# QGIS 原生 UI Theme 目录由 QGIS 自己加载。这里只复制 QSS/Palette/SVG，
+# 不注入 QStylePlugin，也不改变 Qt library path。
+qgis_theme_root="${inner_app}/Contents/Resources/qgis/resources/themes"
+if [[ ! -d "${qgis_theme_root}" ]]; then
+    echo "Official QGIS UI theme root is missing: ${qgis_theme_root}" >&2
+    exit 1
+fi
+ditto "${theme_source}" "${qgis_theme_root}/QGISPlus Material"
+
+# QGIS 在 Python 插件加载前已经完成初次主题扫描。这个极小插件只将上述
+# 静态 QSS 目录注册进 QGIS 原生主题注册表，并按全局设置启用它。
+qgis_python_plugin_root="${inner_app}/Contents/Resources/qgis/python/plugins"
+if [[ ! -d "${qgis_python_plugin_root}" ]]; then
+    echo "Official QGIS Python plugin root is missing: ${qgis_python_plugin_root}" >&2
+    exit 1
+fi
+ditto "${theme_plugin_source}" \
+    "${qgis_python_plugin_root}/qgisplus_theme"
+
+ditto "${launcher}" "${outer_app}/Contents/MacOS/QGISPlusLauncher"
 chmod 755 "${outer_app}/Contents/MacOS/QGISPlusLauncher"
 sed "s/@VERSION@/${version}/g" \
     "${repo_root}/packaging/macos/Info.plist.in" \
     > "${outer_app}/Contents/Info.plist"
 
-plugin_path="${inner_app}/Contents/PlugIns/styles/$(basename "${style_plugin}")"
 qgis_binary="${inner_app}/Contents/MacOS/${official_executable}"
-qgis_frameworks="${inner_app}/Contents/Frameworks"
-
-# lipo 的输入文件必须位于命令之前，否则它会把文件路径当成额外架构名。
-lipo "${plugin_path}" -verify_arch "${target_arch}"
 lipo "${outer_app}/Contents/MacOS/QGISPlusLauncher" \
     -verify_arch "${target_arch}"
 lipo "${qgis_binary}" -verify_arch "${target_arch}"
-if ! otool -l "${plugin_path}" | grep -Fq \
-        '@loader_path/../../Frameworks'; then
-    install_name_tool -add_rpath \
-        '@loader_path/../../Frameworks' \
-        "${plugin_path}"
-fi
 
-# AQT/Homebrew SDK 使用 Qt*.framework，官方 QGIS 则打包为 libQt6*.dylib。
-# 将每个 Qt framework 依赖重绑定到内层 QGIS 自带的同名主版本 dylib。
-while IFS= read -r dependency; do
-    case "${dependency}" in
-        */Qt*.framework/*)
-            framework_name="$(printf '%s\n' "${dependency}" | \
-                sed -E 's|^.*/(Qt[^/]+)\.framework/.*$|\1|')"
-            module_name="${framework_name#Qt}"
-            bundled_name="libQt6${module_name}.6.dylib"
-            if [[ ! -f "${qgis_frameworks}/${bundled_name}" ]]; then
-                echo "Bundled QGIS Qt library is missing: ${bundled_name}" >&2
-                exit 1
-            fi
-            install_name_tool -change "${dependency}" \
-                "@rpath/${bundled_name}" "${plugin_path}"
-            ;;
-    esac
-done < <(otool -L "${plugin_path}" | tail -n +2 | awk '{print $1}')
-
-if otool -L "${plugin_path}" | tail -n +2 | awk '{print $1}' | \
-        grep -Eq 'Qt[^/]+\.framework/'; then
-    echo "Style plugin still references a Qt framework unavailable in QGIS." >&2
-    otool -L "${plugin_path}" >&2
-    exit 1
-fi
-
-while IFS= read -r dependency; do
-    case "${dependency}" in
-        @rpath/libQt6*.dylib)
-            if [[ ! -f "${qgis_frameworks}/${dependency#@rpath/}" ]]; then
-                echo "Rebound Qt dependency is missing: ${dependency}" >&2
-                exit 1
-            fi
-            ;;
-    esac
-done < <(otool -L "${plugin_path}" | tail -n +2 | awk '{print $1}')
-
-# install_name_tool 会改变插件签名。插件现在属于内层 QGIS 的标准 PlugIns
-# 目录，因此先签插件，再重新封装内层 bundle 的资源签名，最后签外层 App。
-codesign --force --sign - --timestamp=none "${plugin_path}"
+# 新增主题改变了内层 Bundle 的资源封装，因此重新执行 ad-hoc 签名。
 codesign --force --sign - --timestamp=none "${inner_app}"
 codesign --verify --deep --strict "${inner_app}"
-codesign --force --sign - --timestamp=none "${outer_app}"
+# 外层 App 在 Resources 中嵌套完整 QGIS.app。使用 --deep 让 codesign 先
+# 处理所有嵌套代码，再封装外层资源，避免仅重签外壳时返回非零。
+codesign --force --deep --sign - --timestamp=none "${outer_app}"
 codesign --verify --deep --strict "${outer_app}"
 
-# 不再以“插件文件存在”作为成功标准。启动真实 QGIS，等待其完成设置加载，
-# 并确认 QgsAppStyle 的底层 QStyle 确实是 Qlementine。
-python3 "${repo_root}/scripts/verify_qgis_style.py" \
+python3 "${repo_root}/scripts/verify_qgis_theme.py" \
     --launcher "${outer_app}/Contents/MacOS/QGISPlusLauncher" \
-    --probe "${repo_root}/scripts/qgis_style_probe.py" \
-    --work-dir "${work_root}/style-probe"
+    --probe "${repo_root}/scripts/qgis_theme_probe.py" \
+    --work-dir "${work_root}/theme-probe"
 
-# 再打开真实 Options 对话框检查可读性。仅验证插件存在或 Style key 可见，
-# 无法发现禁用文字接近背景、下拉项被截断等实际 UI 回归。
 python3 "${repo_root}/scripts/verify_qgis_options_ui.py" \
     --launcher "${outer_app}/Contents/MacOS/QGISPlusLauncher" \
     --probe "${repo_root}/scripts/qgis_options_visual_probe.py" \

@@ -41,7 +41,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  QT_VERSION: "6.8.3"
   PYTHON_VERSION: "3.11"
   AQT_VERSION: "3.3.0"
 
@@ -53,7 +52,6 @@ jobs:
     outputs:
       qgis_tag: ${{ steps.releases.outputs.qgis_tag }}
       qgis_version: ${{ steps.releases.outputs.qgis_version }}
-      qlementine_tag: ${{ steps.releases.outputs.qlementine_tag }}
       windows_name: ${{ steps.packages.outputs.windows_name }}
       windows_url: ${{ steps.packages.outputs.windows_url }}
       windows_checksum_url: ${{ steps.packages.outputs.windows_checksum_url }}
@@ -89,7 +87,7 @@ jobs:
           echo "requested_release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
           echo "publish_release=${publish_release}" >> "${GITHUB_OUTPUT}"
       - id: releases
-        name: Resolve QGIS and Qlementine releases
+        name: Resolve QGIS release
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -156,51 +154,12 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Check out Qlementine release
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: oclero/qlementine
-          ref: ${{ needs.versions.outputs.qlementine_tag }}
-          path: upstream/qlementine
-          fetch-depth: 1
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - name: Install lightweight build tools
-        run: python -m pip install --disable-pip-version-check aqtinstall==${{ env.AQT_VERSION }} ninja
-
-      - name: Restore Qt SDK cache
-        id: qt-cache
-        continue-on-error: true
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.0.3
-        with:
-          path: .cache/Qt
-          key: qgisplus-qt-${{ runner.os }}-${{ matrix.arch }}-${{ env.QT_VERSION }}-${{ matrix.qt_arch }}
-      - name: Install or validate Qt on Windows
+      - name: Install Windows packaging tool
         if: matrix.platform == 'windows'
-        shell: pwsh
-        run: |
-          $qtRoot = Join-Path $env:GITHUB_WORKSPACE ".cache/Qt/$env:QT_VERSION/msvc2022_64"
-          if (-not (Test-Path -LiteralPath "$qtRoot/bin/Qt6Core.dll" -PathType Leaf)) {
-            Remove-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE ".cache/Qt") -Recurse -Force -ErrorAction SilentlyContinue
-            python -m aqt install-qt windows desktop $env:QT_VERSION win64_msvc2022_64 --outputdir "$env:GITHUB_WORKSPACE/.cache/Qt"
-          }
-          if (-not (Test-Path -LiteralPath "$qtRoot/bin/Qt6Core.dll" -PathType Leaf)) {
-            throw "Qt SDK validation failed: $qtRoot"
-          }
-          "QT_ROOT=$qtRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-      - name: Install or validate Qt on macOS
-        if: startsWith(matrix.platform, 'macos-')
-        shell: bash
-        run: |
-          qt_root="${GITHUB_WORKSPACE}/.cache/Qt/${QT_VERSION}/macos"
-          if [[ ! -x "${qt_root}/bin/qtpaths" ]]; then
-            rm -rf "${GITHUB_WORKSPACE}/.cache/Qt"
-            python -m aqt install-qt mac desktop "${QT_VERSION}" clang_64 \
-              --outputdir "${GITHUB_WORKSPACE}/.cache/Qt"
-          fi
-          test -x "${qt_root}/bin/qtpaths"
-          echo "QT_ROOT=${qt_root}" >> "${GITHUB_ENV}"
+        run: python -m pip install --disable-pip-version-check aqtinstall==${{ env.AQT_VERSION }}
 
       - name: Configure and build Windows overlay
         if: matrix.platform == 'windows'
@@ -209,10 +168,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
-            -D CMAKE_BUILD_TYPE=Release `
-            -D CMAKE_PREFIX_PATH="$env:QT_ROOT" `
-            -D QGISPLUS_QLEMENTINE_SOURCE_DIR="$env:GITHUB_WORKSPACE/upstream/qlementine" `
-            -D QGISPLUS_QLEMENTINE_TAG="${{ needs.versions.outputs.qlementine_tag }}"
+            -D CMAKE_BUILD_TYPE=Release
           if ($LASTEXITCODE -ne 0) {
             throw "CMake configuration failed with exit code $LASTEXITCODE"
           }
@@ -220,30 +176,27 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "CMake build failed with exit code $LASTEXITCODE"
           }
-          ctest --test-dir build -C Release --output-on-failure
+          python -m unittest tests/test_scripts.py
           if ($LASTEXITCODE -ne 0) {
-            throw "CTest failed with exit code $LASTEXITCODE"
+            throw "Python tests failed with exit code $LASTEXITCODE"
           }
       - name: Configure and build macOS overlay
         if: startsWith(matrix.platform, 'macos-')
         shell: bash
         run: |
-          cmake -S . -B build -G Ninja \
+          cmake -S . -B build \
             -D CMAKE_BUILD_TYPE=Release \
-            -D CMAKE_PREFIX_PATH="${QT_ROOT}" \
             -D CMAKE_OSX_ARCHITECTURES="${{ matrix.arch }}" \
-            -D CMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
-            -D QGISPLUS_QLEMENTINE_SOURCE_DIR="${GITHUB_WORKSPACE}/upstream/qlementine" \
-            -D QGISPLUS_QLEMENTINE_TAG="${{ needs.versions.outputs.qlementine_tag }}"
+            -D CMAKE_OSX_DEPLOYMENT_TARGET=12.0
           cmake --build build --parallel 2
-          ctest --test-dir build --output-on-failure
+          python -m unittest tests/test_scripts.py
 
       - name: Restore official QGIS installer cache
         continue-on-error: true
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.0.3
         with:
           path: .cache/qgis-installer
-          key: qgisplus-official-${{ matrix.qt_host }}-${{ needs.versions.outputs.qgis_version }}
+          key: qgisplus-official-${{ matrix.package_host }}-${{ needs.versions.outputs.qgis_version }}
       - name: Download verified Windows MSI
         if: matrix.platform == 'windows'
         shell: pwsh
@@ -288,24 +241,25 @@ jobs:
           python scripts/stage_windows_binary.py `
             --runtime $runtime `
             --launcher "build/launcher/Release/QGIS+.exe" `
-            --style-plugin "build/plugins/styles/Release/qgisplusstyle.dll" `
+            --theme "themes/QGISPlus Material" `
+            --theme-plugin "plugins/qgisplus_theme" `
             --global-settings "packaging/qgisplus-global-settings.ini"
           if ($LASTEXITCODE -ne 0) {
             throw "Windows runtime staging failed with exit code $LASTEXITCODE"
           }
-          python scripts/verify_qgis_style.py `
+          python scripts/verify_qgis_theme.py `
             --launcher "$runtime/QGIS+.exe" `
-            --probe "scripts/qgis_style_probe.py" `
-            --work-dir "$env:RUNNER_TEMP/qgisplus-style-probe"
+            --probe "scripts/qgis_theme_probe.py" `
+            --work-dir "$env:RUNNER_TEMP/qgisplus-theme-probe"
           if ($LASTEXITCODE -ne 0) {
-            throw "Windows Qlementine runtime verification failed"
+            throw "Windows QGISPlus Material verification failed"
           }
           python scripts/verify_qgis_options_ui.py `
             --launcher "$runtime/QGIS+.exe" `
             --probe "scripts/qgis_options_visual_probe.py" `
             --work-dir "$env:RUNNER_TEMP/qgisplus-options-ui-probe"
           if ($LASTEXITCODE -ne 0) {
-            throw "Windows Qlementine Options UI verification failed"
+            throw "Windows QGISPlus Material Options UI verification failed"
           }
           python scripts/prepare_ifw_package.py `
             --runtime $runtime `
@@ -366,7 +320,6 @@ jobs:
           output="dist/QGISPlus-${{ needs.versions.outputs.qgis_version }}-${{ matrix.platform }}.dmg"
           bash scripts/package_macos_binary.sh \
             "${RUNNER_TEMP}/official/QGIS.app" \
-            "build/plugins/styles/libqgisplusstyle.so" \
             "build/launcher/QGISPlusLauncher" \
             "${{ matrix.arch }}" \
             "${{ needs.versions.outputs.qgis_version }}" \
@@ -422,5 +375,5 @@ jobs:
             gh release create "${RELEASE_TAG}" dist/* \
               --target "${GITHUB_SHA}" \
               --title "QGIS+ ${RELEASE_TAG}" \
-              --notes "QGIS+ based on the official QGIS ${QGIS_VERSION} binaries with the Qlementine style enabled by default."
+              --notes "QGIS+ based on the official QGIS ${QGIS_VERSION} binaries with the compact QGISPlus Material UI theme enabled by default."
           fi

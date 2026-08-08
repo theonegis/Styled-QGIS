@@ -126,12 +126,12 @@ void showError(const std::wstring_view message) {
     return quoted;
 }
 
-[[nodiscard]] bool hasOption(const bool nativeStyle,
+[[nodiscard]] bool hasOption(const bool nativeTheme,
                              const std::wstring_view shortOption,
                              const std::wstring_view longOption) {
     const auto shortWithEquals = std::wstring{shortOption} + L"=";
     const auto longWithEquals = std::wstring{longOption} + L"=";
-    for (int index = nativeStyle ? 2 : 1; index < __argc; ++index) {
+    for (int index = nativeTheme ? 2 : 1; index < __argc; ++index) {
         const std::wstring_view argument{__wargv[index]};
         if (argument == shortOption || argument == longOption ||
             argument.starts_with(shortWithEquals) ||
@@ -164,12 +164,12 @@ void appendArgument(std::wstring& arguments, const std::wstring_view argument) {
 }
 
 [[nodiscard]] std::wstring forwardedArguments(
-    const bool nativeStyle, const std::vector<std::wstring>& injected) {
+    const bool nativeTheme, const std::vector<std::wstring>& injected) {
     std::wstring arguments;
     for (const auto& argument : injected) {
         appendArgument(arguments, argument);
     }
-    for (int index = nativeStyle ? 2 : 1; index < __argc; ++index) {
+    for (int index = nativeTheme ? 2 : 1; index < __argc; ++index) {
         appendArgument(arguments, __wargv[index]);
     }
     return arguments;
@@ -192,32 +192,28 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return 3;
     }
 
-    const bool nativeStyle = __argc > 1 &&
-        _wcsicmp(__wargv[1], L"--native-style") == 0;
-    if (nativeStyle) {
-        SetEnvironmentVariableW(L"QT_STYLE_OVERRIDE", nullptr);
-    } else if (!SetEnvironmentVariableW(L"QT_STYLE_OVERRIDE", L"Qlementine")) {
-        showError(L"无法设置 Qlementine 环境。\n\n" +
-                  windowsErrorMessage(GetLastError()));
-        return 4;
-    }
+    // --native-style 是旧版兼容别名。QGIS+ 现在只注入 UI Theme，
+    // 不再设置 QT_STYLE_OVERRIDE 或加载第三方 QStyle 插件。
+    const bool nativeTheme = __argc > 1 &&
+        (_wcsicmp(__wargv[1], L"--native-theme") == 0 ||
+         _wcsicmp(__wargv[1], L"--native-style") == 0);
 
     std::vector<std::wstring> injectedArguments;
-    if (!nativeStyle) {
-        if (!hasOption(nativeStyle, L"-g", L"--globalsettingsfile")) {
+    if (!nativeTheme) {
+        if (!hasOption(nativeTheme, L"-g", L"--globalsettingsfile")) {
             const auto globalSettings = *root / L"qgisplus-global-settings.ini";
             if (!fs::is_regular_file(globalSettings)) {
-                showError(L"QGIS+ 安装不完整：默认样式配置文件缺失。");
-                return 5;
+                showError(L"QGIS+ 安装不完整：默认主题配置文件缺失。");
+                return 4;
             }
             injectedArguments.emplace_back(L"--globalsettingsfile");
             injectedArguments.emplace_back(globalSettings.wstring());
         }
-        if (!hasOption(nativeStyle, L"-S", L"--profiles-path")) {
+        if (!hasOption(nativeTheme, L"-S", L"--profiles-path")) {
             const auto profilesPath = qgisPlusProfilesPath();
             if (!profilesPath) {
                 showError(L"无法确定 QGIS+ 用户配置目录。");
-                return 6;
+                return 5;
             }
             injectedArguments.emplace_back(L"--profiles-path");
             injectedArguments.emplace_back(profilesPath->wstring());
@@ -225,7 +221,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     }
 
     auto file = qgisLauncher->wstring();
-    auto parameters = forwardedArguments(nativeStyle, injectedArguments);
+    auto parameters = forwardedArguments(nativeTheme, injectedArguments);
     auto directory = qgisLauncher->parent_path().wstring();
     SHELLEXECUTEINFOW executeInfo{
         .cbSize = sizeof(SHELLEXECUTEINFOW),
@@ -240,7 +236,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     if (!ShellExecuteExW(&executeInfo) || executeInfo.hProcess == nullptr) {
         showError(L"无法启动官方 QGIS。\n\n" +
                   windowsErrorMessage(GetLastError()));
-        return 7;
+        return 6;
     }
 
     WaitForSingleObject(executeInfo.hProcess, INFINITE);

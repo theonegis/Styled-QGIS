@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch a staged QGIS+ runtime and reject packages not using Qlementine."""
+"""Launch a staged QGIS+ runtime and verify the bundled QSS theme is active."""
 
 from __future__ import annotations
 
@@ -19,21 +19,19 @@ def verify(launcher: Path, probe: Path, work_dir: Path, timeout: int) -> dict:
     if not launcher.is_file():
         raise RuntimeError(f"QGIS+ launcher is missing: {launcher}")
     if not probe.is_file():
-        raise RuntimeError(f"QGIS style probe is missing: {probe}")
+        raise RuntimeError(f"QGIS theme probe is missing: {probe}")
 
     work_dir.mkdir(parents=True, exist_ok=True)
-    profiles = work_dir / "profiles"
-    result_path = work_dir / "qgisplus-style-probe.json"
+    result_path = work_dir / "qgisplus-theme-probe.json"
     result_path.unlink(missing_ok=True)
     environment = os.environ.copy()
-    environment["QGISPLUS_STYLE_PROBE_OUTPUT"] = str(result_path)
+    environment["QGISPLUS_THEME_PROBE_OUTPUT"] = str(result_path)
     command = [
         str(launcher),
         "--nologo",
         "--noversioncheck",
-        "--noplugins",
         "--profiles-path",
-        str(profiles),
+        str(work_dir / "profiles"),
         "--code",
         str(probe),
     ]
@@ -49,10 +47,9 @@ def verify(launcher: Path, probe: Path, work_dir: Path, timeout: int) -> dict:
             check=False,
         )
     except subprocess.TimeoutExpired as error:
-        raise RuntimeError(f"QGIS+ style probe timed out after {timeout}s") from error
+        raise RuntimeError(f"QGIS+ theme probe timed out after {timeout}s") from error
 
-    # 某些官方 Windows qgis.bat 会在真正的 qgis-bin.exe 完成前退出。
-    # 保留总超时上限，等待由 QGIS 内部探针写出的结果文件。
+    # 官方 Windows 启动脚本可能先于 qgis-bin.exe 返回；等待内部探针写出结果。
     while not result_path.is_file() and time.monotonic() < deadline:
         time.sleep(0.2)
 
@@ -62,15 +59,15 @@ def verify(launcher: Path, probe: Path, work_dir: Path, timeout: int) -> dict:
         print(completed.stderr, end="", file=sys.stderr)
     if not result_path.is_file():
         raise RuntimeError(
-            f"QGIS+ did not write the style probe result (exit {completed.returncode})"
+            f"QGIS+ did not write the theme probe result (exit {completed.returncode})"
         )
     result = json.loads(result_path.read_text(encoding="utf-8"))
     if completed.returncode != 0 or not result.get("passed", False):
         raise RuntimeError(
-            f"QGIS+ runtime verification failed (exit {completed.returncode}): "
+            f"QGIS+ runtime theme verification failed (exit {completed.returncode}): "
             + json.dumps(result, ensure_ascii=False)
         )
-    print("Verified QGIS+ runtime style: Qlementine")
+    print("Verified QGIS+ runtime theme: QGISPlus Material")
     return result
 
 

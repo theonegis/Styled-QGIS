@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve the newest stable QGIS 4.x and Qlementine releases from GitHub."""
+"""Resolve the newest stable QGIS 4.x release from GitHub."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from typing import Any, Iterable
 
 
 QGIS_RELEASE_RE = re.compile(r"^final-(\d+)_(\d+)_(\d+)$")
-QLEMENTINE_RELEASE_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:\.\d+)?$")
 BUILD_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-r\d+)?$")
 
 
@@ -116,12 +115,7 @@ def resolve(qgis_major: int = 4, build_tag: str = "") -> dict[str, Release]:
             QGIS_RELEASE_RE,
             required_major=qgis_major,
             required_version=required_version,
-        ),
-        "qlementine": _select_release(
-            "oclero/qlementine",
-            _github_releases("oclero/qlementine"),
-            QLEMENTINE_RELEASE_RE,
-        ),
+        )
     }
 
 

@@ -1,4 +1,4 @@
-"""打开 QGIS Options 对话框并记录 ItemView/ComboBox 的可读性信息。"""
+"""打开 QGIS Options 并检查 QSS 可读性、菜单交互与主题下拉框。"""
 
 from __future__ import annotations
 
@@ -162,6 +162,37 @@ def _capture_impl() -> None:
             for index in range(style_combo.count())
         ],
     }
+    # 下拉框隐藏后 Qt 可能只截到空白；在可见状态保存快照。
+    style_popup_capture = style_popup.grab()
+    style_combo.hidePopup()
+
+    theme_combo = dialog.findChild(QComboBox, "cmbUITheme")
+    if theme_combo is None:
+        raise RuntimeError("QGIS UI Theme ComboBox was not found")
+    theme_combo.showPopup()
+    QApplication.processEvents()
+    QApplication.processEvents()
+    theme_view = theme_combo.view()
+    theme_popup = theme_view.parentWidget()
+    theme_content_width = max(
+        (
+            theme_combo.fontMetrics().horizontalAdvance(
+                theme_combo.itemText(index)
+            )
+            for index in range(theme_combo.count())
+        ),
+        default=0,
+    )
+    theme_popup_info = {
+        "combo_width": theme_combo.width(),
+        "view_width": theme_view.width(),
+        "content_width": theme_content_width,
+        "items": [
+            theme_combo.itemText(index)
+            for index in range(theme_combo.count())
+        ],
+    }
+    theme_popup_capture = theme_popup.grab()
 
     item_views = []
     for view in dialog.findChildren(QAbstractItemView):
@@ -211,20 +242,33 @@ def _capture_impl() -> None:
         palette.color(disabled, role.Text),
         palette.color(disabled, role.Window),
     )
-    popup_has_full_width = (
-        style_view.width() >= style_combo.width() + 16
+    selected_contrast = _contrast(
+        palette.color(group, role.HighlightedText),
+        palette.color(group, role.Highlight),
+    )
+    style_popup_has_full_width = (
+        style_view.width() >= style_combo.width()
         and style_view.width() >= style_content_width + 32
+    )
+    theme_popup_has_full_width = (
+        theme_view.width() >= theme_combo.width()
+        and theme_view.width() >= theme_content_width + 32
     )
     result = {
         "passed": (
             active_contrast >= 4.5
             and disabled_contrast >= 4.0
-            and popup_has_full_width
+            and selected_contrast >= 4.5
+            and style_popup_has_full_width
+            and theme_popup_has_full_width
+            and "QGISPlus Material" in theme_popup_info["items"]
             and menu_checkable_toggle
         ),
         "active_text_contrast": round(active_contrast, 3),
         "disabled_text_contrast": round(disabled_contrast, 3),
+        "selected_text_contrast": round(selected_contrast, 3),
         "style_popup": style_popup_info,
+        "theme_popup": theme_popup_info,
         "menu_checkable_toggle": menu_checkable_toggle,
         "dialog_palette": _palette(dialog),
         "item_views": item_views,
@@ -245,11 +289,18 @@ def _capture_impl() -> None:
             "QGISPLUS_COMBO_SCREENSHOT", "/tmp/qgisplus-combo-probe.png"
         )
     )
+    theme_combo_screenshot = Path(
+        os.environ.get(
+            "QGISPLUS_THEME_COMBO_SCREENSHOT",
+            "/tmp/qgisplus-theme-combo-probe.png",
+        )
+    )
     output.write_text(
         json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     dialog.grab().save(str(screenshot))
-    style_popup.grab().save(str(combo_screenshot))
+    style_popup_capture.save(str(combo_screenshot))
+    theme_popup_capture.save(str(theme_combo_screenshot))
     print(
         "QGISPLUS_OPTIONS_PROBE="
         + json.dumps(
@@ -257,7 +308,9 @@ def _capture_impl() -> None:
                 "passed": result["passed"],
                 "active_text_contrast": result["active_text_contrast"],
                 "disabled_text_contrast": result["disabled_text_contrast"],
+                "selected_text_contrast": result["selected_text_contrast"],
                 "style_popup": result["style_popup"],
+                "theme_popup": result["theme_popup"],
                 "menu_checkable_toggle": result["menu_checkable_toggle"],
             }
         ),

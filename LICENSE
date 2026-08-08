@@ -14,6 +14,7 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-QGIS is licensed under GPL-2.0-or-later. Qlementine is licensed under
-the MIT License. Their original copyright notices and licenses remain
-in the assembled source tree and binary distribution.
+QGIS is licensed under GPL-2.0-or-later. The qt_material stylesheet and
+derived SVG resources are distributed under the BSD 2-Clause License.
+Their original copyright notices and licenses remain in the source tree
+and binary distribution.

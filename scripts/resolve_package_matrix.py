@@ -16,8 +16,7 @@ PLATFORMS = {
         "name": "Windows x64 installer",
         "os": "windows-2022",
         "arch": "x64",
-        "qt_host": "windows",
-        "qt_arch": "win64_msvc2022_64",
+        "package_host": "windows",
         "artifact": "QGISPlus-Windows-x64",
     },
     "macos_intel": {
@@ -25,8 +24,7 @@ PLATFORMS = {
         "name": "macOS Intel DMG",
         "os": "macos-15-intel",
         "arch": "x86_64",
-        "qt_host": "mac",
-        "qt_arch": "clang_64",
+        "package_host": "mac",
         "artifact": "QGISPlus-macOS-Intel",
     },
     "macos_arm64": {
@@ -34,8 +32,7 @@ PLATFORMS = {
         "name": "macOS Apple Silicon DMG",
         "os": "macos-15",
         "arch": "arm64",
-        "qt_host": "mac",
-        "qt_arch": "clang_64",
+        "package_host": "mac",
         "artifact": "QGISPlus-macOS-Apple-Silicon",
     },
 }

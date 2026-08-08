@@ -78,38 +78,21 @@ int main(int argc, char* argv[]) {
     try {
         const auto contents = executablePath().parent_path().parent_path();
         const auto qgis = qgisExecutable(contents);
-        // QGIS 会重建自己的 Qt library paths。把插件根目录指向内层官方
-        // QGIS.app，确保 QApplication 初始化时能从原生 styles 目录发现主题。
-        const auto pluginRoot = (contents / "Resources" / "QGIS.app" /
-                                 "Contents" / "PlugIns").string();
-        const auto existingPluginPath = std::getenv("QT_PLUGIN_PATH");
-        const auto pluginPath = existingPluginPath != nullptr
-            ? pluginRoot + ":" + existingPluginPath
-            : pluginRoot;
-        if (setenv("QT_PLUGIN_PATH", pluginPath.c_str(), 1) != 0) {
-            throw std::runtime_error{std::strerror(errno)};
-        }
+        // --native-style 作为旧版兼容别名保留；新版本不再替换 QStyle，
+        // 该开关仅跳过 QGISPlus Material UI Theme 和独立 profile。
+        const bool nativeTheme = argc > 1 &&
+            (std::string_view{argv[1]} == "--native-theme" ||
+             std::string_view{argv[1]} == "--native-style");
 
-        const bool nativeStyle = argc > 1 &&
-            std::string_view{argv[1]} == "--native-style";
-        if (nativeStyle) {
-            unsetenv("QT_STYLE_OVERRIDE");
-        } else if (setenv("QT_STYLE_OVERRIDE", "Qlementine", 1) != 0) {
-            throw std::runtime_error{std::strerror(errno)};
-        }
-
-        const auto firstForwarded = nativeStyle ? 2 : 1;
+        const auto firstForwarded = nativeTheme ? 2 : 1;
         std::vector<std::string> arguments;
         arguments.emplace_back(qgis.string());
-        // Qt 6 的命令行形式是 -style=<name>。分成两个参数会只消费
-        // -style，并让 QGIS 把 Qlementine 误认为待打开的数据源。
-        // QT_STYLE_OVERRIDE 已经是更稳定的跨平台设置方式，不再重复传参。
-        if (!nativeStyle) {
+        if (!nativeTheme) {
             const auto globalSettings =
                 contents / "Resources" / "qgisplus-global-settings.ini";
             if (!fs::is_regular_file(globalSettings)) {
                 throw std::runtime_error{
-                    "Bundled QGIS+ global settings are missing"};
+                    "Bundled QGIS+ theme settings are missing"};
             }
             if (!hasOption(argc, argv, firstForwarded, "-g",
                            "--globalsettingsfile")) {
